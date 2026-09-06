@@ -1,0 +1,6 @@
+node_modules/
+.ai-workflow/runtime/
+*.log
+.env
+.env.*
+!.env.example
