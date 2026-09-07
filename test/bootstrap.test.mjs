@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const read = relative => readFile(path.join(root, relative), "utf8");
+const read = async relative => (await readFile(path.join(root, relative), "utf8")).replaceAll("\r\n", "\n");
 
 test("v9.1 bootstrap keeps role selection explicit and routing manual", async () => {
   const bootstrap = await read(".ai-workflow/BOOTSTRAP.md");
