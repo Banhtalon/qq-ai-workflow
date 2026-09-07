@@ -1,6 +1,6 @@
 # Multi-AI Bootstrap
 
-Template release: **9.1.0**  
+Template release: **9.1.1**  
 Canonical control core: **QQ AI Workflow v9.0.0**  
 Routing mode: **MANUAL**
 
@@ -34,6 +34,25 @@ Planner responsibilities may be performed by the Controller when the project
 profile binds the same capability, but Controller authority and Implementer
 execution remain separate.
 
+## Controller execution-environment fallback
+
+A Controller tool limitation is not an Owner blocker. When the next canonical
+operation requires a trusted networked Git checkout, provider console, migration
+tool, or recovery environment that the current Controller session cannot use,
+the Controller must route that exact operation to the Technical Operator using
+`.ai-workflow/templates/TECHNICAL_OPERATOR_HANDOFF.md`.
+
+The Controller must not invent a reservation, create a normal branch as a
+substitute for a Controller transaction, or issue an `IMPLEMENTER_HANDOFF` before
+the required transaction succeeds. It also must not ask the Owner to run CLI,
+inspect logs, or diagnose the technical gap. If the only missing step is opening
+or authorizing an account-bound execution environment, the Owner may be asked
+only for that account action; the Technical Operator still performs the commands.
+
+After a `TECHNICAL_OPERATOR_RESULT` returns, the Controller independently checks
+the authoritative Issue, exact digest/state, and any required clean-baseline
+proof before continuing.
+
 ## Owner boundary
 
 The Owner should only be asked for:
@@ -49,6 +68,17 @@ controls, or technical diagnostics.
 
 ## Minimal cross-AI exchange
 
-The Controller sends only an `IMPLEMENTER_HANDOFF` packet. The Implementer
-returns only an `IMPLEMENTER_RESULT` packet. Both sides must independently read
-the repository and authoritative task instead of relying on copied chat history.
+Normal implementation flow:
+
+- Controller -> Implementer: `IMPLEMENTER_HANDOFF`;
+- Implementer -> Controller: `IMPLEMENTER_RESULT`.
+
+Technical execution fallback when needed:
+
+- Controller -> Technical Operator: `TECHNICAL_OPERATOR_HANDOFF`;
+- Technical Operator -> Controller: `TECHNICAL_OPERATOR_RESULT`;
+- Controller verifies the returned authority/state before issuing any
+  `IMPLEMENTER_HANDOFF`.
+
+All actors independently read the repository and authoritative task instead of
+relying on copied chat history.
