@@ -33,7 +33,7 @@ test("Controller execution-environment gaps route to Technical Operator instead 
   assert.match(bootstrap, /Controller tool limitation is not an Owner blocker/i);
   assert.match(controller, /TECHNICAL_OPERATOR_HANDOFF/);
   assert.match(controller, /do not ask the Owner to run commands/i);
-  assert.match(controllerPrompt, /do not stop merely because of the tool limitation/i);
+  assert.match(controllerPrompt, /do not stop merely because of the\s+tool limitation/i);
   assert.match(operator, /prepare-attempt\.mjs/);
   assert.match(operator, /never reconstruct authority from repo-local state/i);
 });
