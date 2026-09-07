@@ -207,6 +207,28 @@ test("index hiding flags cannot hide changed disk bytes", async () => {
   }
 });
 
+test("redaction suppresses entire multi-value Cookie and Set-Cookie headers", () => {
+  for (const name of ["Cookie", "Set-Cookie"]) {
+    const boundary = boundedOutput({});
+    boundary.push(Buffer.from(name + ": session=fake-session; "));
+    boundary.push(Buffer.from("refresh=fake-refresh; Path=/\n"));
+    const output = boundary.finish();
+    assert.equal(output.includes("fake-session"), false);
+    assert.equal(output.includes("fake-refresh"), false);
+    assert.match(output, /REDACTED_COOKIE_HEADER/);
+  }
+});
+
+test("redaction masks Basic authorization and quoted JSON credentials", () => {
+  const boundary = boundedOutput({});
+  boundary.push(Buffer.from('Authorization: Basic ZmFrZTpmYWtl\n'));
+  boundary.push(Buffer.from(JSON.stringify({token:"fake-sensitive-value", access_token:"fake-second-value"}) + "\n"));
+  const output = boundary.finish();
+  for (const secret of ["ZmFrZTpmYWtl", "fake-sensitive-value", "fake-second-value"]) {
+    assert.equal(output.includes(secret), false);
+  }
+});
+
 test("installer refuses an existing scripts destination before writes", async () => {
   const f = await fixture(rules);
   const protectedFile = path.join(f.cwd, "scripts/qq-ai-workflow/lib/control.mjs");

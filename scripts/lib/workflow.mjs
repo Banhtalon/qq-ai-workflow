@@ -183,6 +183,9 @@ export function redactText(input, env = process.env) {
     output = output.split(value).join("[REDACTED_ENV_SECRET]");
   }
   const replacements = [
+    [/\b(?:set-cookie|cookie)\s*[:=][^\r\n]*/gi, "[REDACTED_COOKIE_HEADER]"],
+    [/\b(?:proxy-authorization|authorization)\s*:[^\r\n]*/gi, "[REDACTED_AUTHORIZATION_HEADER]"],
+    [/("[^"]*(?:password|passwd|secret|token|cookie|api[_-]?key|private[_-]?key)[^"]*"\s*:\s*)"(?:\\.|[^"\\])*"/gi, '$1"[REDACTED]"'],
     [/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]"],
     [/(?:ghp_|github_pat_|sk-|xox[baprs]-)[A-Za-z0-9_-]{8,}/gi, "[REDACTED_TOKEN]"],
     [/\b[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\b/g, "[REDACTED_JWT]"],
