@@ -1,8 +1,6 @@
 import { access, cp, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-console.log(JSON.stringify({ status: "INSTALLED", target: targetRoot, routing_mode: "MANUAL" }, null, 2));
-console.log(JSON.stringify({ status: "INSTALLED", target: targetRoot, routing_mode: "MANUAL" }, null, 2));
 const targetIndex = process.argv.indexOf("--target");
 const targetArg = targetIndex >= 0 ? process.argv[targetIndex + 1] : null;
 if (!targetArg) {
@@ -12,7 +10,7 @@ if (!targetArg) {
 const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const targetRoot = path.resolve(targetArg);
 await access(targetRoot);
-for (const protectedPath of [".ai-workflow", "AGENTS.md"]) {
+for (const protectedPath of [".ai-workflow", "AGENTS.md", "scripts/qq-ai-workflow"]) {
   try {
     await access(path.join(targetRoot, protectedPath));
     console.error(`BLOCKED: ${protectedPath} already exists; inventory and migrate it explicitly`);

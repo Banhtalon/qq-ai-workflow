@@ -1,12 +1,11 @@
 # QQ Evidence-Gated Workflow v9
-  authenticated browser state in chat, tasks, logs, or evidence.
-  authenticated browser state in chat, tasks, logs, or evidence.
 Read these files before changing the project:
 
 1. `.ai-workflow/V9_CANONICAL_SPEC.md`
 2. `.ai-workflow/POLICY.md`
 3. `.ai-workflow/PROJECT_PROFILE.json`
 4. the current task and its frozen verification manifest
+5. `.ai-workflow/CONTROLLER_OPERATIONS.md`
 
 Rules:
 

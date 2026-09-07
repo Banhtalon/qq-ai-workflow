@@ -10,7 +10,7 @@
     {
       "id": "development-control-plane",
       "risk": "YELLOW",
-      "path_globs": [".ai-workflow/**", ".agents/**", ".github/ISSUE_TEMPLATE/**", ".github/PULL_REQUEST_TEMPLATE.md", "AGENTS.md", "GEMINI.md", "eslint.config.js"],
+      "path_globs": [".ai-workflow/**", ".agents/**", ".github/ISSUE_TEMPLATE/**", ".github/PULL_REQUEST_TEMPLATE.md", "AGENTS.md", "GEMINI.md", "eslint.config.js", ".gitattributes", ".gitmodules", "scripts/**", "test/**", "tests/**", "package*.json", "docs/*WORKFLOW*", "docs/*STATE*", "docs/*GUIDE*", "docs/workflow/**"],
       "required_roles": ["QUALIFIED_REVIEWER"],
       "reason": "Development policy, evidence, or gate control changed"
     },

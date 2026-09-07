@@ -4,6 +4,10 @@ Status: **CANONICAL**
 Version: **9.0.0**
 Routing mode: **MANUAL**
 
+Revision 2 implementation contract: read CONTROLLER_OPERATIONS.md. The external
+Controller snapshot and its issue-pinned digest are mandatory command inputs.
+Repository-local locks alone never establish authority.
+
 ## 1. Purpose
 
 v9 lets a non-technical Owner state product intent, answer business questions,
@@ -135,13 +139,13 @@ approval.
 
 ## 11. Adoption gate
 
-The template is ready for new projects only after the canonical tests and all
-three hermetic pilots pass:
+The template is ready for new projects only after the canonical tests, all
+three hermetic pilots, fresh independent review and Controller readiness pass:
 
 - GREEN: allowed with deterministic gates;
 - YELLOW: allowed with extra review requirement while complexity stays
   independently classified;
 - escalation: RED tripwire stops execution and routes to qualified humans.
 
-Pilot PASS proves the workflow controls, not the host project's product or
-production readiness.
+Pilot PASS exercises the tested workflow controls; it is not adoption approval
+and does not establish the host project's product or production readiness.
