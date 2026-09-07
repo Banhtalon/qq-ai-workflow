@@ -10,7 +10,7 @@ if (!targetArg) {
 const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const targetRoot = path.resolve(targetArg);
 await access(targetRoot);
-for (const protectedPath of [".ai-workflow", "AGENTS.md"]) {
+for (const protectedPath of [".ai-workflow", "AGENTS.md", "scripts/qq-ai-workflow"]) {
   try {
     await access(path.join(targetRoot, protectedPath));
     console.error(`BLOCKED: ${protectedPath} already exists; inventory and migrate it explicitly`);

@@ -246,7 +246,7 @@ export function inspectCandidate(cwd, control) {
   // Disable rename collapsing: both removed and added paths participate.
   const paths = git(cwd, "diff", "--no-renames", "--name-only", "-z",
     control.base_sha, control.candidate_head).split("\0").filter(Boolean);
-  const diffText = git(cwd, "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+  const diffText = git(cwd, "diff", "--text", "--no-ext-diff", "--no-textconv", "--no-renames",
     "--unified=0", control.base_sha, control.candidate_head);
   const decision = classifyRisk({ paths, diffText, declared: control.effective_risk,
     priorEffective: control.effective_risk, complexity: control.complexity, rules: control.rules });

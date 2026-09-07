@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { Buffer } from "node:buffer";
+import { lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { mkdir, open, readFile, realpath, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 
@@ -20,6 +22,29 @@ export function cleanHead(cwd, expected) {
   if (head !== expected) throw new Error("candidate HEAD mismatch");
   if (git(cwd, "status", "--porcelain=v1", "--untracked-files=all").trim()) {
     throw new Error("candidate checkout is dirty");
+  }
+  if (git(cwd, "ls-files", "-v", "-z").split("\0").some(entry => /^[a-zS]/.test(entry))) {
+    throw new Error("candidate has hidden index flags");
+  }
+  // Compare disk bytes against HEAD blobs, independent of index stat cache,
+  // attributes, clean filters, fsmonitor and assume-unchanged optimizations.
+  const blobHash = bytes => createHash("sha1").update("blob " + bytes.length + "\0").update(bytes).digest("hex");
+  for (const entry of git(cwd, "ls-tree", "-r", "-z", "HEAD").split("\0").filter(Boolean)) {
+    const tab = entry.indexOf("\t");
+    const [mode, type, sha] = entry.slice(0, tab).split(" ");
+    if (type !== "blob") throw new Error("submodule verification requires a separate gate");
+    const name = path.join(cwd, entry.slice(tab + 1));
+    const stat = lstatSync(name);
+    const bytes = stat.isSymbolicLink() ? Buffer.from(readlinkSync(name)) : readFileSync(name);
+    if (stat.isSymbolicLink() && mode !== "120000") throw new Error("unexpected candidate symlink");
+    if (blobHash(bytes) !== sha) {
+      // Git Windows checkouts may use CRLF. Permit only that text conversion;
+      // arbitrary candidate-controlled clean filters cannot establish equality.
+      const normalized = Buffer.from(bytes.toString("utf8").replaceAll("\r\n", "\n"));
+      if (bytes.includes(0) || blobHash(normalized) !== sha) {
+        throw new Error("candidate disk bytes differ from HEAD");
+      }
+    }
   }
   return head;
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 import path from "node:path";
 import test from "node:test";
@@ -189,4 +190,30 @@ test("concurrent reservations cannot allocate the same next attempt", async () =
     reserveAttempt(f.controlPath, f.controlDigest, f.cwd, path.join(f.root,"two"),"two"),
   ]);
   assert.equal(results.filter(r => r.status === "fulfilled").length, 1);
+});
+
+test("candidate attributes cannot hide dangerous text from risk", async () => {
+  const f = await fixture(rules, { ".gitattributes": "notes.md -diff\n",
+    "notes.md": "DROP TABLE students;" });
+  assert.equal(inspectCandidate(f.cwd, f.control).effective, "RED");
+});
+
+test("index hiding flags cannot hide changed disk bytes", async () => {
+  for (const flag of ["--assume-unchanged", "--skip-worktree"]) {
+    const f = await fixture(rules);
+    git(f.cwd, "update-index", flag, "notes.md");
+    await writeFile(path.join(f.cwd, "notes.md"), "hidden change");
+    await assert.rejects(verifyManifest(f.manifestPath, f), /hidden index|disk bytes/);
+  }
+});
+
+test("installer refuses an existing scripts destination before writes", async () => {
+  const f = await fixture(rules);
+  const protectedFile = path.join(f.cwd, "scripts/qq-ai-workflow/lib/control.mjs");
+  await mkdir(path.dirname(protectedFile), { recursive: true });
+  await writeFile(protectedFile, "preserve existing code");
+  const installer = fileURLToPath(new URL("../scripts/install.mjs", import.meta.url));
+  const result = await runRedacted([process.execPath, installer, "--target", f.cwd]);
+  assert.equal(result.code, 73);
+  assert.equal(await readFile(protectedFile, "utf8"), "preserve existing code");
 });
