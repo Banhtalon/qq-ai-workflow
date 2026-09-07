@@ -1,33 +1,21 @@
-import { readFile } from "node:fs/promises";
-import path from "node:path";
-import { classifyRisk, readJson, writeJson } from "./lib/workflow.mjs";
-
-function option(name, fallback) {
-  const index = process.argv.indexOf(name);
-  return index >= 0 ? process.argv[index + 1] : fallback;
+import { assertActiveAttempt, readControl, updateControl } from "./lib/control.mjs";
+import { inspectCandidate } from "./lib/workflow.mjs";
+const [controlPath, controlDigest, candidateHead] = process.argv.slice(2);
+try {
+  const { control } = await readControl(controlPath, controlDigest, process.cwd());
+  if (!["IMPLEMENTING", "VERIFYING"].includes(control.state)) throw new Error("invalid binding state");
+  await assertActiveAttempt(control, process.cwd());
+  control.candidate_head = candidateHead;
+  const risk = inspectCandidate(process.cwd(), control);
+  const result = await updateControl(controlPath, controlDigest, process.cwd(), next => {
+    next.candidate_head = candidateHead;
+    next.effective_risk = risk.effective;
+    next.state = risk.effective === "RED" ? "ESCALATED_TECHNICAL" : "VERIFYING";
+    return next;
+  });
+  console.log(JSON.stringify({ ...risk, controller_digest: result.digest, state: result.control.state }, null, 2));
+  if (risk.effective === "RED") process.exitCode = 20;
+} catch {
+  console.error("BLOCKED: Controller binding or Git risk inspection failed");
+  process.exitCode = 2;
 }
-
-function listAfter(name) {
-  const index = process.argv.indexOf(name);
-  if (index < 0) return [];
-  const values = [];
-  for (let cursor = index + 1; cursor < process.argv.length && !process.argv[cursor].startsWith("--"); cursor += 1) {
-    values.push(process.argv[cursor]);
-  }
-  return values;
-}
-
-const rulesPath = path.resolve(option("--rules", ".ai-workflow/RISK_RULES.json"));
-const diffFile = option("--diff-file", null);
-const decision = classifyRisk({
-  paths: listAfter("--paths"),
-  diffText: diffFile ? await readFile(path.resolve(diffFile), "utf8") : "",
-  declared: option("--declared", "GREEN"),
-  priorEffective: option("--prior", "GREEN"),
-  complexity: option("--complexity", "S"),
-  rules: await readJson(rulesPath),
-});
-const output = option("--output", null);
-if (output) await writeJson(path.resolve(output), decision);
-console.log(JSON.stringify(decision, null, 2));
-if (decision.action === "STOP_AND_ESCALATE") process.exitCode = 20;

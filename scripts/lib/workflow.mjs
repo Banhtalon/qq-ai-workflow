@@ -3,6 +3,8 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
+import { assertActiveAttempt, cleanHead, git, readControl } from "./control.mjs";
 
 export const RISK_LEVELS = Object.freeze({ GREEN: 0, YELLOW: 1, RED: 2 });
 export const COMPLEXITY_LEVELS = Object.freeze(["S", "M", "L", "XL"]);
@@ -32,10 +34,12 @@ export function maxRisk(...values) {
 function globToRegExp(glob) {
   const normalized = glob.replaceAll("\\", "/");
   let source = normalized.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  source = source.replaceAll("**/", "\u0001");
   source = source.replaceAll("**", "\u0000");
   source = source.replaceAll("*", "[^/]*");
   source = source.replaceAll("?", "[^/]");
   source = source.replaceAll("\u0000", ".*");
+  source = source.replaceAll("\u0001", "(?:.*/)?");
   return new RegExp(`^${source}$`, "i");
 }
 
@@ -202,6 +206,53 @@ function argvForPlatform(argv) {
   return argv;
 }
 
+// Buffer one bounded line only. Oversized lines are discarded in full, rather
+// than emitting a prefix that could contain part of a split secret.
+export function boundedOutput(env = process.env, limit = 32768) {
+  const decoder = new StringDecoder("utf8");
+  const suppress = secretEnvironmentValues(env).some(value => /[\r\n]/.test(value) || value.length > limit);
+  let line = "";
+  let output = "";
+  let dropping = false;
+  const append = (value) => { output = (output + value).slice(-limit); };
+  return {
+    push(chunk) {
+      if (suppress) return;
+      for (const character of decoder.write(chunk)) {
+        if (character === "\n") {
+          append(dropping ? "[REDACTED_OVERSIZED_LINE]\n" : redactText(line, env) + "\n");
+          line = "";
+          dropping = false;
+        } else if (!dropping) {
+          line += character;
+          if (line.length > limit) { line = ""; dropping = true; }
+        }
+      }
+    },
+    finish() {
+      if (suppress) return "[REDACTED_UNSAFE_SECRET_ENVIRONMENT]";
+      line += decoder.end();
+      append(dropping ? "[REDACTED_OVERSIZED_LINE]" : redactText(line, env));
+      line = "";
+      dropping = false;
+      return output;
+    },
+  };
+}
+
+export function inspectCandidate(cwd, control) {
+  cleanHead(cwd, control.candidate_head);
+  git(cwd, "merge-base", "--is-ancestor", control.base_sha, control.candidate_head);
+  // Disable rename collapsing: both removed and added paths participate.
+  const paths = git(cwd, "diff", "--no-renames", "--name-only", "-z",
+    control.base_sha, control.candidate_head).split("\0").filter(Boolean);
+  const diffText = git(cwd, "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+    "--unified=0", control.base_sha, control.candidate_head);
+  const decision = classifyRisk({ paths, diffText, declared: control.effective_risk,
+    priorEffective: control.effective_risk, complexity: control.complexity, rules: control.rules });
+  return { ...decision, paths, candidate_head: control.candidate_head, base_sha: control.base_sha };
+}
+
 export async function runRedacted(argv, { cwd = process.cwd(), timeoutSeconds = 300, env = process.env } = {}) {
   if (!Array.isArray(argv) || argv.length === 0) {
     throw new Error("argv must be a non-empty array");
@@ -224,11 +275,11 @@ export async function runRedacted(argv, { cwd = process.cwd(), timeoutSeconds = 
       shell: false,
       windowsHide: true,
     });
-    let stdout = "";
-    let stderr = "";
+    const stdout = boundedOutput(env);
+    const stderr = boundedOutput(env);
     let timedOut = false;
-    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
-    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.on("error", reject);
     const timer = setTimeout(() => {
       timedOut = true;
@@ -239,18 +290,33 @@ export async function runRedacted(argv, { cwd = process.cwd(), timeoutSeconds = 
       resolve({
         code: timedOut ? 124 : (code ?? 1),
         timed_out: timedOut,
-        stdout: redactText(stdout, env).slice(-32768),
-        stderr: redactText(stderr, env).slice(-32768),
+        stdout: stdout.finish(),
+        stderr: stderr.finish(),
         redaction_applied: true,
       });
     });
   });
 }
 
-export async function verifyManifest(manifestPath, { lockPath = defaultLockPath(manifestPath), cwd } = {}) {
+export async function verifyManifest(manifestPath, {
+  lockPath = defaultLockPath(manifestPath), cwd = process.cwd(), controlPath, controlDigest,
+} = {}) {
+  const { control } = await readControl(controlPath, controlDigest, cwd);
+  if (control.state !== "VERIFYING") throw new Error("Controller must authorize VERIFYING");
+  await assertActiveAttempt(control, cwd);
+  const candidateHead = cleanHead(cwd, control.candidate_head);
   const manifest = validateManifest(await readJson(manifestPath));
   const lock = await readJson(lockPath);
   const actualHash = await sha256File(manifestPath);
+  if (actualHash !== control.manifest_sha256) throw new Error("external manifest anchor mismatch");
+  for (const field of ["task_id", "scope_revision", "base_sha"]) {
+    if (manifest[field] !== control[field]) throw new Error("Controller manifest identity mismatch");
+  }
+  const risk = inspectCandidate(cwd, control);
+  if (risk.effective !== control.effective_risk) throw new Error("Controller risk must be updated before verification");
+  if (risk.effective === "RED" && control.red_disposition_head !== candidateHead) {
+    throw new Error("RED requires Technical Operator disposition bound to candidate head");
+  }
   if (lock.schema_version !== "qq.workflow.verification-lock.v9") {
     throw new Error("unsupported verification lock schema");
   }
@@ -284,6 +350,9 @@ export async function verifyManifest(manifestPath, { lockPath = defaultLockPath(
     });
     if (gate.required && result.code !== 0) break;
   }
+  cleanHead(cwd, candidateHead);
+  await readControl(controlPath, controlDigest, cwd);
+  if (await sha256File(manifestPath) !== actualHash) throw new Error("manifest changed during gates");
 
   const pass = gateResults.length === manifest.gates.length && gateResults.every((gate) => gate.verdict === "PASS");
   return {
@@ -291,6 +360,9 @@ export async function verifyManifest(manifestPath, { lockPath = defaultLockPath(
     task_id: manifest.task_id,
     scope_revision: manifest.scope_revision,
     base_sha: manifest.base_sha,
+    candidate_head: candidateHead,
+    controller_digest: controlDigest,
+    risk,
     evidence_tier: manifest.evidence_tier,
     manifest_sha256: actualHash,
     started_at: startedAt.toISOString(),
