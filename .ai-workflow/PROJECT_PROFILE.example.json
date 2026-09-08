@@ -2,7 +2,7 @@
   "schema_version": "qq.workflow.project-profile.v9",
   "project": "REPLACE_ME",
   "canonical_version": "9.0.0",
-  "template_release": "9.1.1",
+  "template_release": "9.1.2",
   "routing_mode": "MANUAL",
   "control_plane": {
     "authoritative_task_state": "REPLACE_WITH_GITHUB_ISSUE_OR_CONTROLLER_STORE",
@@ -16,11 +16,15 @@
   "bootstrap": {
     "controller_prompt": ".ai-workflow/prompts/CONTROLLER_BOOTSTRAP.md",
     "implementer_prompt": ".ai-workflow/prompts/IMPLEMENTER_BOOTSTRAP.md",
+    "reviewer_prompt": ".ai-workflow/prompts/REVIEWER_BOOTSTRAP.md",
     "technical_operator_prompt": ".ai-workflow/prompts/TECHNICAL_OPERATOR_BOOTSTRAP.md",
     "implementer_handoff": ".ai-workflow/templates/IMPLEMENTER_HANDOFF.md",
     "implementer_result": ".ai-workflow/templates/IMPLEMENTER_RESULT.md",
     "technical_operator_handoff": ".ai-workflow/templates/TECHNICAL_OPERATOR_HANDOFF.md",
-    "technical_operator_result": ".ai-workflow/templates/TECHNICAL_OPERATOR_RESULT.md"
+    "technical_operator_result": ".ai-workflow/templates/TECHNICAL_OPERATOR_RESULT.md",
+    "qualified_review_handoff": ".ai-workflow/templates/QUALIFIED_REVIEW_HANDOFF.md",
+    "qualified_review_result": ".ai-workflow/templates/QUALIFIED_REVIEW.md",
+    "file_first_convention": ".ai-workflow/HANDOFF_FILES.md"
   },
   "attempt_ladder": [
     "default-implementer-1",

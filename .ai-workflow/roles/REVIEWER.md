@@ -11,6 +11,8 @@ the exact candidate head from fresh context.
 - inspect deterministic evidence without substituting opinion for machine gates;
 - return exactly one disposition: `RECOMMEND_PASS`, `NEEDS_FIX`, or `BLOCKED`;
 - list unresolved findings by severity and identify evidence gaps.
+- return a downloadable file named by `HANDOFF_FILES.md` following
+  `.ai-workflow/templates/QUALIFIED_REVIEW.md`.
 
 ## Forbidden
 

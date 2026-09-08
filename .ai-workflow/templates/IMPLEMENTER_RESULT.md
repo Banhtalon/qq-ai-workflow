@@ -1,6 +1,6 @@
 # IMPLEMENTER_RESULT
 
-Return this packet to the Controller. Do not include secrets, tokens, cookies,
+Return this packet as `TASK-<id>-implementer-result.md` to the Controller. Do not include secrets, tokens, cookies,
 passwords, raw browser state, or student PII.
 
 - task_id: `TASK-...`

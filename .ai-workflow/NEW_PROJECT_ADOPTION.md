@@ -22,6 +22,8 @@ Use this repository as the default starting template only when `npm test` and
 8. Run role-isolation tests: Controller must not implement product code;
    Implementer must not reserve attempts, change task authority, edit frozen
    verification to make work pass, or merge; Reviewer must remain independent.
+9. Confirm `HANDOFF_FILES.md` names the file-first transfers and that the
+   project Issue guidance records only concise state/digest/SHA/references.
 
 ## Existing project migration
 

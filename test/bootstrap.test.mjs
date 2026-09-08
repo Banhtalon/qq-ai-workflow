@@ -41,7 +41,7 @@ test("Controller execution-environment gaps route to Technical Operator instead 
 test("project profile example binds multi-AI roles manually", async () => {
   const profile = JSON.parse(await read(".ai-workflow/PROJECT_PROFILE.example.json"));
   assert.equal(profile.canonical_version, "9.0.0");
-  assert.equal(profile.template_release, "9.1.1");
+  assert.equal(profile.template_release, "9.1.2");
   assert.equal(profile.routing_mode, "MANUAL");
   assert.equal(profile.manual_bindings.controller, "chatgpt-sol");
   assert.equal(profile.manual_bindings.default_implementer, "gemini-flash");
@@ -49,9 +49,13 @@ test("project profile example binds multi-AI roles manually", async () => {
   assert.equal(profile.controller_execution.environment_gap_route, "technical_operator");
   assert.equal(profile.bootstrap.controller_prompt, ".ai-workflow/prompts/CONTROLLER_BOOTSTRAP.md");
   assert.equal(profile.bootstrap.implementer_prompt, ".ai-workflow/prompts/IMPLEMENTER_BOOTSTRAP.md");
+  assert.equal(profile.bootstrap.reviewer_prompt, ".ai-workflow/prompts/REVIEWER_BOOTSTRAP.md");
   assert.equal(profile.bootstrap.technical_operator_prompt, ".ai-workflow/prompts/TECHNICAL_OPERATOR_BOOTSTRAP.md");
   assert.equal(profile.bootstrap.technical_operator_handoff, ".ai-workflow/templates/TECHNICAL_OPERATOR_HANDOFF.md");
   assert.equal(profile.bootstrap.technical_operator_result, ".ai-workflow/templates/TECHNICAL_OPERATOR_RESULT.md");
+  assert.equal(profile.bootstrap.qualified_review_handoff, ".ai-workflow/templates/QUALIFIED_REVIEW_HANDOFF.md");
+  assert.equal(profile.bootstrap.qualified_review_result, ".ai-workflow/templates/QUALIFIED_REVIEW.md");
+  assert.equal(profile.bootstrap.file_first_convention, ".ai-workflow/HANDOFF_FILES.md");
 });
 
 test("handoff packets are bounded and keep completion authority with Controller", async () => {
@@ -77,4 +81,24 @@ test("Technical Operator handoff/result preserve external Controller authority",
     assert.ok(result.includes(field), field);
   }
   assert.match(result, /Controller must independently verify/i);
+});
+
+test("file-first convention preserves authority and gives every actor a named return file", async () => {
+  const convention = await read(".ai-workflow/HANDOFF_FILES.md");
+  const reviewerHandoff = await read(".ai-workflow/templates/QUALIFIED_REVIEW_HANDOFF.md");
+  const review = await read(".ai-workflow/templates/QUALIFIED_REVIEW.md");
+  const reviewerPrompt = await read(".ai-workflow/prompts/REVIEWER_BOOTSTRAP.md");
+  for (const filename of [
+    "TASK-<id>-technical-operator-handoff.md",
+    "TASK-<id>-technical-operator-result.md",
+    "TASK-<id>-implementer-handoff.md",
+    "TASK-<id>-implementer-result.md",
+    "TASK-<id>-qualified-review-handoff.md",
+    "TASK-<id>-qualified-review.md",
+  ]) assert.ok(convention.includes(filename), filename);
+  assert.match(convention, /does not grant authority/i);
+  assert.match(convention, /Issue.*concise authority/i);
+  assert.match(reviewerHandoff, /candidate_sha/);
+  assert.match(review, /RECOMMEND_PASS.*NEEDS_FIX.*BLOCKED/s);
+  assert.match(reviewerPrompt, /fresh independent context/i);
 });

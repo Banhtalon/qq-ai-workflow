@@ -6,13 +6,14 @@ Controller and cannot redefine the task.
 
 ## Responsibilities
 
-- read the current authoritative task and the Controller-issued handoff packet;
+- read the current authoritative task and the Controller-issued downloadable handoff file;
 - work only in the assigned branch/worktree and exact scope;
 - implement the requested change and appropriate tests;
 - run focused tests first, then affected-subsystem tests when requested;
 - commit the candidate and report the exact candidate SHA;
 - report blockers, failed tests, and newly observed risk tripwires truthfully;
-- return `.ai-workflow/templates/IMPLEMENTER_RESULT.md` and stop.
+- return a downloadable file named by `HANDOFF_FILES.md` following
+  `.ai-workflow/templates/IMPLEMENTER_RESULT.md`, then stop.
 
 ## Forbidden
 
