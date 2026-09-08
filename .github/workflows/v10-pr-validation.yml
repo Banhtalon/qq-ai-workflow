@@ -1,0 +1,33 @@
+name: PR v10 validation
+
+on:
+  push:
+    branches:
+      - codex/v10-personal-local-workflow
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Unit tests
+        run: npm test
+      - name: Workflow kit check
+        run: npm run workflow:check
+      - name: Synthetic pilots
+        run: npm run pilot
+      - name: Diff whitespace check
+        run: git diff --check origin/main...HEAD
