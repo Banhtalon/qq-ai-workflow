@@ -18,7 +18,8 @@ that should not be delegated to the Owner or ordinary Implementer.
   secret values into prompts, chat, repository, logs, or evidence;
 - recovery after provider failures, interrupted Controller transactions, or
   exhausted retry ladders;
-- return `.ai-workflow/templates/TECHNICAL_OPERATOR_RESULT.md` with sanitized,
+- return a downloadable file named by `HANDOFF_FILES.md` following
+  `.ai-workflow/templates/TECHNICAL_OPERATOR_RESULT.md` with sanitized,
   exact state/digest/attempt evidence bound to the task/revision.
 
 ## Trusted transaction rule

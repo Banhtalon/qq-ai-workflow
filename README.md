@@ -1,6 +1,6 @@
 # QQ AI Workflow v9.1 — Multi-AI Bootstrap
 
-Template release: **9.1.1**  
+Template release: **9.1.2**
 Canonical control core: **QQ AI Workflow v9.0.0**  
 Routing mode: **MANUAL**
 
@@ -30,16 +30,29 @@ technical step that its current chat cannot execute, such as a trusted
 `TECHNICAL_OPERATOR_HANDOFF` for an authorized Technical Operator/Work
 environment rather than stopping or asking the Owner to run commands.
 
+## File-first exchange
+
+v9.1.2 keeps packet contents and authority unchanged, but exchanges packets as
+downloadable files rather than long chat copy-paste. The Controller creates the
+named handoff file; the receiving actor returns the named result file following
+the matching template. See `.ai-workflow/HANDOFF_FILES.md` for filenames and
+the concise Issue checkpoint format.
+
 Normal implementation exchange:
 
-- Controller -> Implementer: `IMPLEMENTER_HANDOFF`;
-- Implementer -> Controller: `IMPLEMENTER_RESULT`.
+- Controller -> Implementer: `TASK-<id>-implementer-handoff.md`;
+- Implementer -> Controller: `TASK-<id>-implementer-result.md`.
 
 Technical execution fallback when needed:
 
-- Controller -> Technical Operator/Work: `TECHNICAL_OPERATOR_HANDOFF`;
-- Technical Operator/Work -> Controller: `TECHNICAL_OPERATOR_RESULT`;
+- Controller -> Technical Operator/Work: `TASK-<id>-technical-operator-handoff.md`;
+- Technical Operator/Work -> Controller: `TASK-<id>-technical-operator-result.md`;
 - Controller independently verifies the returned digest/state before continuing.
+
+Qualified review exchange when required:
+
+- Controller -> Reviewer: `TASK-<id>-qualified-review-handoff.md`;
+- Reviewer -> Controller: `TASK-<id>-qualified-review.md`.
 
 The repository + authoritative task/Issue remain the shared source of truth.
 

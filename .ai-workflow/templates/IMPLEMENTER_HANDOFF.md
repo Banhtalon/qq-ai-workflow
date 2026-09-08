@@ -1,6 +1,7 @@
 # IMPLEMENTER_HANDOFF
 
 This packet is created by the Controller only after a valid attempt is reserved.
+Save the filled packet as `TASK-<id>-implementer-handoff.md` for transfer.
 Do not include secrets, tokens, cookies, passwords, raw browser state, or student PII.
 
 - task_id: `TASK-...`
@@ -38,4 +39,5 @@ Do not include secrets, tokens, cookies, passwords, raw browser state, or studen
 
 ## Required return format
 
-Use `.ai-workflow/templates/IMPLEMENTER_RESULT.md` exactly and stop after reporting.
+Return `TASK-<id>-implementer-result.md` following
+`.ai-workflow/templates/IMPLEMENTER_RESULT.md` exactly, then stop.

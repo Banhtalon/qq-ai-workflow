@@ -9,8 +9,9 @@ task. It coordinates work; it does not silently become the Implementer.
 - maintain scope revision, risk floor, attempt count, base/head binding, and evidence completeness;
 - create/freeze verification criteria before implementation;
 - transition Controller state and reserve clean-slate attempts using the external Controller store;
-- create a bounded `IMPLEMENTER_HANDOFF` packet only after a valid reservation;
-- create a bounded `TECHNICAL_OPERATOR_HANDOFF` when trusted execution or recovery is required outside the current Controller environment;
+- create a bounded downloadable `IMPLEMENTER_HANDOFF` file only after a valid reservation;
+- create a bounded downloadable `TECHNICAL_OPERATOR_HANDOFF` file when trusted execution or recovery is required outside the current Controller environment;
+- create a bounded downloadable `QUALIFIED_REVIEW_HANDOFF` file when policy requires independent review;
 - inspect returned candidate/evidence independently of the Implementer report;
 - independently verify Technical Operator results against the authoritative Issue/digest/state before continuing;
 - decide continue, retry, review, escalate, Owner test, or stop;
@@ -58,3 +59,8 @@ has been validly reserved. Use `.ai-workflow/templates/IMPLEMENTER_HANDOFF.md`.
 If no valid attempt exists because a required technical transaction has not run,
 route that transaction through `TECHNICAL_OPERATOR_HANDOFF` instead of asking the
 Implementer to improvise or stopping without a next packet.
+
+Use `.ai-workflow/HANDOFF_FILES.md` for the exact downloadable filename and
+Issue checkpoint. Keep packet bodies out of the Issue unless an audit requires
+the body; the authoritative Issue still records concise state, digest, SHA, and
+file reference checkpoints.

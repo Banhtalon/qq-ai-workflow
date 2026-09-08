@@ -1,6 +1,6 @@
 # Multi-AI Bootstrap
 
-Template release: **9.1.1**  
+Template release: **9.1.2**
 Canonical control core: **QQ AI Workflow v9.0.0**  
 Routing mode: **MANUAL**
 
@@ -68,17 +68,27 @@ controls, or technical diagnostics.
 
 ## Minimal cross-AI exchange
 
+Use file-first exchanges: the Controller emits a downloadable handoff file and
+the receiving actor returns a downloadable result file. Do not paste long
+packets or full chat histories. The contents still follow the matching template
+and are not authoritative by themselves; see `HANDOFF_FILES.md`.
+
 Normal implementation flow:
 
-- Controller -> Implementer: `IMPLEMENTER_HANDOFF`;
-- Implementer -> Controller: `IMPLEMENTER_RESULT`.
+- Controller -> Implementer: `TASK-<id>-implementer-handoff.md`;
+- Implementer -> Controller: `TASK-<id>-implementer-result.md`.
 
 Technical execution fallback when needed:
 
-- Controller -> Technical Operator: `TECHNICAL_OPERATOR_HANDOFF`;
-- Technical Operator -> Controller: `TECHNICAL_OPERATOR_RESULT`;
+- Controller -> Technical Operator: `TASK-<id>-technical-operator-handoff.md`;
+- Technical Operator -> Controller: `TASK-<id>-technical-operator-result.md`;
 - Controller verifies the returned authority/state before issuing any
   `IMPLEMENTER_HANDOFF`.
+
+Required qualified review flow:
+
+- Controller -> Reviewer: `TASK-<id>-qualified-review-handoff.md`;
+- Reviewer -> Controller: `TASK-<id>-qualified-review.md`.
 
 All actors independently read the repository and authoritative task instead of
 relying on copied chat history.

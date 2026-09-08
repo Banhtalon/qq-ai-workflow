@@ -5,6 +5,10 @@ transaction requires a trusted execution environment outside the current
 Controller session. Do not include secrets, tokens, cookies, passwords, raw
 browser state, or student PII.
 
+Save the filled packet as `TASK-<id>-technical-operator-handoff.md` for
+transfer, attaching the exact external Controller snapshot separately when it
+is required by the authorized operation.
+
 - task_id: `TASK-...`
 - scope_revision: `...`
 - controller_state: `READY|IMPLEMENTING|ESCALATED_TECHNICAL|...`
@@ -51,4 +55,5 @@ ambiguous, mismatched, or if the action would exceed the authorized scope.
 
 ## Required return format
 
-Use `.ai-workflow/templates/TECHNICAL_OPERATOR_RESULT.md` exactly and stop.
+Return `TASK-<id>-technical-operator-result.md` following
+`.ai-workflow/templates/TECHNICAL_OPERATOR_RESULT.md` exactly, then stop.

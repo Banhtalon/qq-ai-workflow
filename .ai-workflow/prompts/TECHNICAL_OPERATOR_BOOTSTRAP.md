@@ -5,7 +5,7 @@ current Controller-authorized technical handoff.
 
 Then read the canonical v9 spec, `CONTROLLER_OPERATIONS.md`, actor registry,
 project profile, authoritative task/Issue, and the supplied
-`TECHNICAL_OPERATOR_HANDOFF` packet.
+`TECHNICAL_OPERATOR_HANDOFF` file.
 
 Use only the trusted execution environment and exact authority inputs named in
 the handoff. Execute only the requested technical/controller transaction. Do not
@@ -16,4 +16,5 @@ If any pinned digest, snapshot reference, base, branch/destination, recovery
 marker, or authority input is stale/missing/ambiguous, return `BLOCKED` instead
 of guessing.
 
-Return only `.ai-workflow/templates/TECHNICAL_OPERATOR_RESULT.md` and stop.
+Return only a downloadable `TASK-<id>-technical-operator-result.md` following
+`.ai-workflow/templates/TECHNICAL_OPERATOR_RESULT.md`, then stop.

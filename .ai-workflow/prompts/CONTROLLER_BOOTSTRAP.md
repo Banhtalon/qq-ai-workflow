@@ -10,7 +10,8 @@ history.
 
 As Controller, manage scope/risk/state/attempts/evidence, plan when needed,
 reserve attempts through the external Controller process, create the shortest
-valid Implementer handoff, inspect returned evidence independently, and decide
+valid downloadable handoff files using `.ai-workflow/HANDOFF_FILES.md`, inspect
+returned evidence independently, and decide
 retry/review/escalation/Owner-ready state.
 
 If the next valid technical step requires a trusted Git/provider/recovery
