@@ -41,13 +41,16 @@ export function redactText(input, env = process.env) {
   return output;
 }
 
-function argvForPlatform(argv) {
-  if (process.platform === "win32" && ["npm", "npx"].includes(argv[0])) {
-    const cli = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", `${argv[0]}-cli.js`);
-    if (existsSync(cli)) return [process.execPath, cli, ...argv.slice(1)];
+export function argvForPlatform(argv,{platform=process.platform,execPath=process.execPath,exists=existsSync}={}) {
+  if (platform !== "win32") return argv;
+  const p=path.win32;
+  if (["npm", "npx"].includes(argv[0])) {
+    const cli = p.join(p.dirname(execPath), "node_modules", "npm", "bin", `${argv[0]}-cli.js`);
+    if (exists(cli)) return [execPath, cli, ...argv.slice(1)];
+    throw new Error(`Windows ${argv[0]} batch shim is not executed directly; use a Node installation with ${argv[0]}-cli.js or an explicit executable`);
   }
-  if (process.platform === "win32" && ["npm", "npx", "pnpm", "yarn"].includes(argv[0])) {
-    return [`${argv[0]}.cmd`, ...argv.slice(1)];
+  if (["pnpm", "yarn"].includes(argv[0]) || /\.(?:cmd|bat)$/i.test(argv[0])) {
+    throw new Error("Windows .cmd/.bat shims are not executed by the verifier; use an explicit .exe or node <cli.js> gate");
   }
   return argv;
 }
@@ -86,14 +89,15 @@ export function boundedOutput(env = process.env, limit = 32768) {
   };
 }
 
-
 export async function runRedacted(argv, {cwd, timeoutSeconds = 300, env = process.env} = {}) {
   if (!Array.isArray(argv) || !argv.length || argv.some(x => typeof x !== "string" || !x))
     throw new Error("invalid argv");
   if (argv.some(looksLikeSecretArgument))
     return {code:78,timed_out:false,stdout:"",stderr:"Secret-like argument rejected",redaction_applied:true};
+  let args;
+  try { args=argvForPlatform(argv); }
+  catch (error) { return {code:78,timed_out:false,stdout:"",stderr:redactText(error.message,env),redaction_applied:true}; }
   return new Promise(resolve => {
-    const args=argvForPlatform(argv);
     const child=spawn(args[0],args.slice(1),{cwd,env,shell:false,windowsHide:true,detached:process.platform!=="win32"});
     const out=boundedOutput(env), err=boundedOutput(env);
     let timed=false, settled=false;

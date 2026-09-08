@@ -10,4 +10,5 @@ Controller and Technical Operator are merged into LEAD for routine local work.
 There is no separate actor to which Owner must relay packets.
 A credential/account-only action stays with Owner in the official UI.
 A blocked technical issue stays with Lead; no Owner technical waiver.
-Configured provider/model/session identities must be recorded in task and review.
+Configured provider/model/effort bindings are recorded in the project profile.
+Actual implementation/review session IDs are recorded in task/review packets; this local kit does not authenticate them.

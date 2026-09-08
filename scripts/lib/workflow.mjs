@@ -68,47 +68,55 @@ export function cleanHead(cwd,expected){
 export async function freeze(taskPath){
   const t=validateTask(await readJson(taskPath));
   const hash=contractHash(t);
-  await writeJson(taskPath+".lock.json",{schema_version:"qq.workflow.lock.v10",task_id:t.task_id,revision:t.revision,contract_sha256:hash},"wx");
-  t.contract_sha256=hash;await writeJson(taskPath,t);return {status:"FROZEN",contract_sha256:hash};
+  await writeJson(taskPath+".lock.json",{schema_version:"qq.workflow.lock.v10",task_id:t.task_id,revision:t.revision,contract_sha256:hash,effective_risk_floor:t.risk},"wx");
+  t.contract_sha256=hash;t.effective_risk=t.risk;await writeJson(taskPath,t);return {status:"FROZEN",contract_sha256:hash};
 }
 export async function assertContract(taskPath,t){
   validateTask(t);
   const lock=await readJson(taskPath+".lock.json");
   required(lock.schema_version==="qq.workflow.lock.v10"&&lock.task_id===t.task_id&&lock.revision===t.revision&&
     lock.contract_sha256===contractHash(t)&&t.contract_sha256===lock.contract_sha256,"contract changed or lock mismatch");
+  required(["LOW","ELEVATED"].includes(lock.effective_risk_floor),"invalid effective risk floor");
+  required(["LOW","ELEVATED"].includes(t.effective_risk),"missing effective risk");
+  required(!(t.risk==="ELEVATED"&&lock.effective_risk_floor!=="ELEVATED"),"risk floor below contract risk");
+  required(!(lock.effective_risk_floor==="ELEVATED"&&t.effective_risk!=="ELEVATED"),"effective risk cannot decrease within a revision");
+  return lock;
 }
 export async function verify(taskPath,cwd){
-  const t=await readJson(taskPath);await assertContract(taskPath,t);
+  const t=await readJson(taskPath);const lock=await assertContract(taskPath,t);
   required(sha(t.candidate_head),"candidate head missing");
   const head=cleanHead(cwd,t.candidate_head);
   git(cwd,"merge-base","--is-ancestor",t.base_sha,head);
   const paths=git(cwd,"diff","--no-renames","--name-only",t.base_sha,head);
   const diff=git(cwd,"diff","--no-ext-diff","--no-textconv","--no-renames","--unified=0",t.base_sha,head);
-  const elevated=t.risk==="ELEVATED"||t.effective_risk==="ELEVATED"||/(^|[/\n])(auth|permissions|migrations|supabase|database)([/\.\n])|(^|[/\n])\.env|rls|credential|secret/i.test(paths)||
+  const elevated=lock.effective_risk_floor==="ELEVATED"||t.risk==="ELEVATED"||t.effective_risk==="ELEVATED"||/(^|[/\n])(auth|permissions|migrations|supabase|database)([/\.\n])|(^|[/\n])\.env|rls|credential|secret/i.test(paths)||
     /\b(DROP\s+(TABLE|DATABASE|SCHEMA)|TRUNCATE|DELETE\s+FROM)\b|service[_-]?role/i.test(diff);
   t.effective_risk=elevated?"ELEVATED":"LOW";
   await writeJson(taskPath,t);
+  if(elevated&&lock.effective_risk_floor!=="ELEVATED"){
+    lock.effective_risk_floor="ELEVATED";await writeJson(taskPath+".lock.json",lock);
+  }
   const results=[];
   for(const g of t.gates){
     results.push({...g,...await runRedacted(g.argv,{cwd,timeoutSeconds:g.timeout_seconds})});
     if(results.at(-1).code!==0)break;
   }
   cleanHead(cwd,head);
-  const after=await readJson(taskPath);await assertContract(taskPath,after);
-  required(after.candidate_head===head&&after.effective_risk===t.effective_risk&&contractHash(after)===contractHash(t),"task changed during gates");
+  const after=await readJson(taskPath);const afterLock=await assertContract(taskPath,after);
+  required(after.candidate_head===head&&after.effective_risk===t.effective_risk&&afterLock.effective_risk_floor===t.effective_risk&&contractHash(after)===contractHash(t),"task changed during gates");
   return {schema_version:"qq.workflow.evidence.v10",task_id:t.task_id,revision:t.revision,
     base_sha:t.base_sha,head,contract_sha256:t.contract_sha256,scope:"local",
-    effective_risk:elevated?"ELEVATED":"LOW",recorded_at:new Date().toISOString(),
+    effective_risk:t.effective_risk,recorded_at:new Date().toISOString(),
     status:results.length===t.gates.length&&results.every(g=>g.code===0&&!g.timed_out)?"PASS":"FAIL",gates:results};
 }
 export function readiness(t,e,r){
   validateTask(t);
   const wait=reason=>({status:"NEEDS_FIX",reason});
-  if(!sha(t.candidate_head)||t.contract_sha256!==contractHash(t))return wait("contract/head invalid");
+  if(!sha(t.candidate_head)||t.contract_sha256!==contractHash(t)||!["LOW","ELEVATED"].includes(t.effective_risk))return wait("contract/head invalid");
   if(!t.implementer_sessions.length)return wait("missing implementation session identity");
   if(!e||e.schema_version!=="qq.workflow.evidence.v10"||e.task_id!==t.task_id||e.revision!==t.revision||
     e.base_sha!==t.base_sha||e.head!==t.candidate_head||e.contract_sha256!==t.contract_sha256||e.scope!=="local"||e.status!=="PASS"||
-    !["LOW","ELEVATED"].includes(e.effective_risk)||!Array.isArray(e.gates)||e.gates.length!==t.gates.length)
+    e.effective_risk!==t.effective_risk||!Array.isArray(e.gates)||e.gates.length!==t.gates.length)
     return wait("missing, failed or stale verification");
   for(let i=0;i<t.gates.length;i++){
     const a=t.gates[i],b=e.gates[i];

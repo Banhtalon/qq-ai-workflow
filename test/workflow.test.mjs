@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import {writeFile} from "node:fs/promises";
 import path from "node:path";
 import {fixture,review,profile} from "./fixture.mjs";
-import {validateTask,validateProfile,contractHash,writeJson,freeze,verify,readiness,route,git} from "../scripts/lib/workflow.mjs";
-import {runRedacted,redactText} from "../scripts/lib/redact.mjs";
+import {validateTask,validateProfile,contractHash,writeJson,readJson,freeze,verify,readiness,route,git} from "../scripts/lib/workflow.mjs";
+import {runRedacted,redactText,argvForPlatform} from "../scripts/lib/redact.mjs";
 
 test("real git candidate: gates, independent review, Owner acceptance",async()=>{
  const f=await fixture();try{
@@ -70,6 +70,14 @@ test("redaction, failing command, missing binary and timeout are real subprocess
  const s=await runRedacted([process.execPath,"-e","console.log(process.env.TEST_SECRET)"],{env:{...process.env,TEST_SECRET:"hidden-fixture-value"}});
  assert(!s.stdout.includes("hidden-fixture-value"));
 });
+test("Windows command selection never directly spawns batch shims",()=>{
+ const execPath="C:\\Program Files\\nodejs\\node.exe";
+ const npm=argvForPlatform(["npm","test"],{platform:"win32",execPath,exists:p=>p.endsWith("npm-cli.js")});
+ assert.equal(npm[0],execPath);assert.match(npm[1],/npm-cli\.js$/);assert.deepEqual(npm.slice(2),["test"]);
+ assert.throws(()=>argvForPlatform(["pnpm","test"],{platform:"win32",execPath,exists:()=>false}),/\.cmd\/\.bat shims/);
+ assert.throws(()=>argvForPlatform(["tool.cmd","x"],{platform:"win32",execPath,exists:()=>false}),/\.cmd\/\.bat shims/);
+ assert.throws(()=>argvForPlatform(["npm","test"],{platform:"win32",execPath,exists:()=>false}),/batch shim/);
+});
 test("schema rejects missing types and duplicate gate IDs",async()=>{
  const f=await fixture();try{
  assert.throws(()=>validateTask({...f.task,gates:[]}));
@@ -77,6 +85,18 @@ test("schema rejects missing types and duplicate gate IDs",async()=>{
  assert.throws(()=>validateTask({...f.task,user_visible:"false"}));
  assert.throws(()=>validateTask({...f.task,base_sha:"main"}));
  assert.equal(contractHash(f.task),f.task.contract_sha256);
+ }finally{await f.cleanup();}
+});
+
+test("effective risk floor is monotonic and evidence must match task state",async()=>{
+ const f=await fixture();try{
+ const raised=await readJson(f.taskPath);raised.effective_risk="ELEVATED";await writeJson(f.taskPath,raised);
+ const e=await verify(f.taskPath,f.repo);assert.equal(e.effective_risk,"ELEVATED");
+ const persisted=await readJson(f.taskPath);assert.equal(persisted.effective_risk,"ELEVATED");
+ const mismatched={...e,effective_risk:"LOW"};
+ assert.equal(readiness(persisted,mismatched,review(persisted)).status,"NEEDS_FIX");
+ persisted.effective_risk="LOW";await writeJson(f.taskPath,persisted);
+ await assert.rejects(verify(f.taskPath,f.repo),/effective risk cannot decrease/);
  }finally{await f.cleanup();}
 });
 
