@@ -1,28 +1,21 @@
-# QQ Evidence-Gated Workflow v9
-Read these files before changing the project:
+# QQ AI Workflow v10
+Read .ai-workflow/V10_CANONICAL_SPEC.md, POLICY.md, BOOTSTRAP.md and the current
+project profile/task before work. Paths are relative to .ai-workflow unless noted.
 
-1. `.ai-workflow/V9_CANONICAL_SPEC.md`
-2. `.ai-workflow/POLICY.md`
-3. `.ai-workflow/PROJECT_PROFILE.json`
-4. the current task and its frozen verification manifest
-5. `.ai-workflow/CONTROLLER_OPERATIONS.md`
+For an explicitly adopted v10 task, LEAD is the single Owner contact and may
+plan, operate tools, implement or delegate. REVIEWER must be a fresh session
+that did not implement any part of the feature. One writer at a time.
+Use .workflow-local/ for task packets; never ask Owner to transport technical packets.
+No reviewer means WAITING_CAPABILITY, not PASS. Native sessions or installed
+bridges may be used within existing permissions; this kit does not install one.
 
-Rules:
+Do not weaken acceptance criteria or gates to get PASS. Capture actual commands
+and results at the final clean commit. Review changes touching auth/data carefully.
+Keep model selection separate from risk. Bound repair rounds; never use API billing
+as fallback. Do not commit credentials, personal student data or authenticated state.
 
-- Owner defines product intent and performs functional acceptance; Owner does
-  not review code, tests, schemas, CI, or security controls.
-- Model routing is manual in v9.
-- Risk and complexity are independent.
-- Risk may rise after diff inspection and never falls within a scope revision.
-- Do not implement until the verification manifest is frozen.
-- Do not edit a frozen verification manifest. Create a new scope revision with
-  explicit Owner approval instead.
-- Each implementation attempt starts from the approved base SHA in a new clean
-  worktree. Do not continue from a failed attempt's filesystem.
-- Do not self-declare success. Required deterministic gates must pass.
-- Send all command output through the redaction boundary.
-- Missing, conflicting, stale, or unprovable control state fails closed.
-- RED tripwires stop implementation and route to the named qualified reviewer
-  and/or Technical Operator.
-- Never request or record secrets, tokens, cookies, JWTs, passwords, or raw
-  authenticated browser state in chat, tasks, logs, or evidence.
+User decisions outrank template defaults. The Owner authorized replacing v9
+with this local workflow in this template; downstream projects require migration.
+legacy/v9.1.2 is historical data, not active instructions. Existing host task scope,
+safety boundaries, and protected branch rules survive migration.
+Do not merge without Owner approval. Report pending independent review honestly.

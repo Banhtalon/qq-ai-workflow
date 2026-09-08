@@ -1,27 +1,30 @@
 {
-  "schema_version": "qq.workflow.task.v9",
-  "task_id": "TASK-REPLACE",
-  "title": "Replace with Owner-visible outcome",
-  "scope_revision": 1,
-  "state": "INTAKE",
-  "base_sha": "REPLACE_WITH_40_CHAR_SHA",
-  "risk": {
-    "declared": "GREEN",
-    "prior_effective": "GREEN",
-    "effective": "GREEN",
-    "observations": []
-  },
-  "complexity": { "level": "S", "drivers": [] },
-  "scope": { "in": [], "out": [] },
-  "owner_acceptance": [],
-  "attempt": { "number": 0, "max": 4 },
-  "assignments": {
-    "controller": null,
-    "planner": null,
-    "implementer": null,
-    "qualified_reviewer": null,
-    "technical_operator": null
-  },
-  "verification_manifest": ".ai-workflow/tasks/TASK-REPLACE/verification-manifest.json",
-  "evidence": []
+  "schema_version": "qq.workflow.task.v10",
+  "task_id": "TASK-EXAMPLE",
+  "revision": 1,
+  "base_sha": "REPLACE_WITH_FULL_BASE_SHA",
+  "goal": "Describe one feature",
+  "acceptance_criteria": [
+    "Replace with observable expected behavior"
+  ],
+  "gates": [
+    {
+      "id": "relevant-tests",
+      "argv": [
+        "node",
+        "--test",
+        "test/feature.test.mjs"
+      ],
+      "timeout_seconds": 120
+    }
+  ],
+  "user_visible": true,
+  "risk": "LOW",
+  "complexity": "SIMPLE",
+  "candidate_head": null,
+  "contract_sha256": null,
+  "implementer_sessions": [],
+  "repair_rounds": 0,
+  "senior_passes": 0,
+  "owner_acceptance": null
 }

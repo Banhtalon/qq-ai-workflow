@@ -1,45 +1,29 @@
 {
-  "schema_version": "qq.workflow.project-profile.v9",
-  "project": "REPLACE_ME",
-  "canonical_version": "9.0.0",
-  "template_release": "9.1.2",
-  "routing_mode": "MANUAL",
-  "control_plane": {
-    "authoritative_task_state": "REPLACE_WITH_GITHUB_ISSUE_OR_CONTROLLER_STORE",
-    "manifest_digest_anchor_required": true
-  },
-  "owner_technical_review_required": false,
-  "controller_execution": {
-    "trusted_git_required_for_attempt_transactions": true,
-    "environment_gap_route": "technical_operator"
-  },
-  "bootstrap": {
-    "controller_prompt": ".ai-workflow/prompts/CONTROLLER_BOOTSTRAP.md",
-    "implementer_prompt": ".ai-workflow/prompts/IMPLEMENTER_BOOTSTRAP.md",
-    "reviewer_prompt": ".ai-workflow/prompts/REVIEWER_BOOTSTRAP.md",
-    "technical_operator_prompt": ".ai-workflow/prompts/TECHNICAL_OPERATOR_BOOTSTRAP.md",
-    "implementer_handoff": ".ai-workflow/templates/IMPLEMENTER_HANDOFF.md",
-    "implementer_result": ".ai-workflow/templates/IMPLEMENTER_RESULT.md",
-    "technical_operator_handoff": ".ai-workflow/templates/TECHNICAL_OPERATOR_HANDOFF.md",
-    "technical_operator_result": ".ai-workflow/templates/TECHNICAL_OPERATOR_RESULT.md",
-    "qualified_review_handoff": ".ai-workflow/templates/QUALIFIED_REVIEW_HANDOFF.md",
-    "qualified_review_result": ".ai-workflow/templates/QUALIFIED_REVIEW.md",
-    "file_first_convention": ".ai-workflow/HANDOFF_FILES.md"
-  },
-  "attempt_ladder": [
-    "default-implementer-1",
-    "default-implementer-2-clean-slate",
-    "senior-implementer-clean-slate",
-    "final-escalation-implementer-clean-slate",
-    "technical-operator-stop"
-  ],
-  "manual_bindings": {
-    "controller": "chatgpt-sol",
-    "planner": "chatgpt-sol",
-    "default_implementer": "gemini-flash",
-    "final_escalation_implementer": "astra",
-    "qualified_reviewer": "terra-xhigh",
-    "technical_operator": "chatgpt-work-or-qualified-human"
-  },
-  "evidence_tiers": ["LOCAL_HERMETIC", "CI", "HOSTED", "LIVE", "PRODUCTION"]
+  "schema_version": "qq.workflow.profile.v10",
+  "routing_mode": "ASSISTED",
+  "billing": "SUBSCRIPTION_ONLY",
+  "max_repairs": 2,
+  "max_senior_passes": 1,
+  "max_writers": 1,
+  "bridge_installed": false,
+  "bindings": {
+    "fast": {
+      "provider": "google",
+      "model": null,
+      "effort": null,
+      "verified": false
+    },
+    "senior": {
+      "provider": "openai",
+      "model": null,
+      "effort": null,
+      "verified": false
+    },
+    "review": {
+      "provider": "openai",
+      "model": null,
+      "effort": null,
+      "verified": false
+    }
+  }
 }
