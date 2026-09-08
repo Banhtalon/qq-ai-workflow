@@ -1,73 +1,28 @@
-# Data Model
-status, and final verdict. A lower tier cannot satisfy a higher-tier criterion.
-status, and final verdict. A lower tier cannot satisfy a higher-tier criterion.
-All JSON files are UTF-8. Unknown required-control fields fail closed.
+# Local packets
+Templates define qq.workflow.task.v10, profile.v10 and review.v10.
+Task contract: task_id, revision, base_sha, goal, acceptance_criteria, gates,
+user_visible, risk, complexity. Each gate has unique id, argv, timeout_seconds.
+Freeze writes <task.json>.lock.json exclusively; task.contract_sha256 copies its hash.
+The lock also carries effective_risk_floor, initialized from contract risk and allowed
+only to rise to ELEVATED. task.effective_risk is initialized at freeze and may never
+be lower than that persisted floor within the same revision.
+Lead records candidate_head, all implementer session IDs, repair counts and
+owner_acceptance {head, contract_sha256, accepted, source}.
+No shared-secret or credential field is permitted.
 
-## Task
+Verification: exact task_id/revision/base/head/contract_sha256, local scope, gates.
+Each result contains argv, timeout_seconds, code, timed_out, redacted output.
+Secret-like gate IDs or arguments block freeze/verification before packet writes or
+gate execution. Verification emits no new evidence for these invalid inputs; keep
+credentials in the account environment. Only declared gate fields enter evidence.
+Evidence effective_risk must equal the task's persisted effective_risk.
+Review: same task identity/head/hash, reviewer_session, independent, verdict,
+material_findings (array), summary. Verdict is PASS, NEEDS_FIX or BLOCKED.
+A failed or missing field cannot become READY_FOR_OWNER.
+Local JSON and session IDs are operator-supplied; these are consistency checks.
 
-Required fields:
+Elevated-risk review additionally requires risk_checks_completed=true and describes the checks in summary.
 
-```json
-{
-  "schema_version": "qq.workflow.task.v9",
-  "task_id": "TASK-001",
-  "title": "Plain-language title",
-  "scope_revision": 1,
-  "state": "INTAKE",
-  "base_sha": "40-character commit SHA",
-  "risk": {
-    "declared": "GREEN",
-    "prior_effective": "GREEN",
-    "effective": "GREEN",
-    "observations": []
-  },
-  "complexity": {
-    "level": "S",
-    "drivers": []
-  },
-  "scope": { "in": [], "out": [] },
-  "owner_acceptance": [],
-  "attempt": { "number": 0, "max": 4 },
-  "assignments": {
-    "controller": null,
-    "planner": null,
-    "implementer": null,
-    "qualified_reviewer": null,
-    "technical_operator": null
-  },
-  "verification_manifest": "relative/path/verification-manifest.json",
-  "evidence": []
-}
-```
-
-Risk values: `GREEN`, `YELLOW`, `RED`. Complexity values: `S`, `M`, `L`, `XL`.
-They are deliberately different enums and have no implicit mapping.
-
-## Verification manifest and lock
-
-The manifest contains `task_id`, `scope_revision`, `base_sha`, acceptance
-criteria, and ordered gates. Each gate uses an `argv` array; shell strings are
-not accepted. The lock contains the exact-file SHA-256 and freeze timestamp.
-
-```json
-{
-  "schema_version": "qq.workflow.verification-lock.v9",
-  "task_id": "TASK-001",
-  "scope_revision": 1,
-  "base_sha": "...",
-  "manifest_sha256": "sha256:...",
-  "frozen_at": "ISO-8601 UTC"
-}
-```
-
-## Risk decision
-
-The risk inspector returns declared, prior, observed, and effective risk plus
-matched tripwires, required roles, action, and the independently supplied
-complexity. A RED decision uses action `STOP_AND_ESCALATE`.
-
-## Evidence record
-
-Each record identifies evidence tier (`LOCAL_HERMETIC`, `CI`, `HOSTED`, `LIVE`,
-or `PRODUCTION`), exact revision/head, manifest hash, gate results, redaction
-status, and final verdict. A lower tier cannot satisfy a higher-tier criterion.
+Lead preserves effective_risk across attempts. The verifier persists observed escalation
+in both task state and the monotonic lock floor; contract risk is the intake floor.
+These local files are trusted, not tamper-resistant.

@@ -1,106 +1,54 @@
-# QQ AI Workflow v9.1 — Multi-AI Bootstrap
+# QQ AI Workflow v10 — Personal Local
+Version: **10.0.0-rc.1** · Stage: **workflow kit; local CLI bridge not installed**
 
-Template release: **9.1.2**
-Canonical control core: **QQ AI Workflow v9.0.0**  
-Routing mode: **MANUAL**
+Một Codex nhận yêu cầu, tự làm hoặc giao Gemini, kiểm thử, gọi reviewer độc lập,
+sửa lỗi và đưa bản dùng thử cho Owner. Dành cho một người dùng, dự án nhỏ trên
+Windows. ChatGPT web là nơi bàn ý tưởng tùy chọn.
 
-Reusable, evidence-gated workflow kit for projects whose Owner should not need
-to read code or operate the engineering control plane. v9.1 adds a thin
-multi-AI bootstrap/handoff layer; it does not change v9 authority, risk,
-verification, clean-attempt, review, or secret boundaries.
+## Bắt đầu
+Đọc [hướng dẫn Owner](.ai-workflow/OWNER_GUIDE.md), sau đó giao yêu cầu trong Codex:
+“Đọc AGENTS.md và .ai-workflow/BOOTSTRAP.md. Tiếp tục công việc hiện tại theo v10.”
 
-The canonical specification is `.ai-workflow/V9_CANONICAL_SPEC.md`.
+[Spec](.ai-workflow/V10_CANONICAL_SPEC.md) là luật duy nhất cho task đã chuyển sang v10.
+[Migration](.ai-workflow/MIGRATION.md) hướng dẫn chuyển dự án cũ; không tự chuyển
+TASK-11 của mindx-review-bot.
 
-## Owner quick start — two prompts
+## Có gì ở bản này
+- Lead gộp điều phối, thao tác kỹ thuật và có thể implement.
+- Quy tắc chọn model theo độ khó và rủi ro; review theo tính năng.
+- Contract yêu cầu/kiểm thử được chốt trước code; evidence gắn đúng commit.
+- Công cụ local: chốt contract, chạy gates có che thông tin nhạy cảm,
+  kiểm tra gói kết quả, đề xuất route và báo trạng thái.
+- Bridge chưa triển khai: cấu hình mặc định ASSISTED, không tự spawn CLI,
+  không tự đăng nhập, không tự mua credit, không có scheduler nền.
 
-Use these short prompts repeatedly; each AI reads the repository and current
-authoritative task instead of receiving a copied chat history.
+Không có reviewer hoặc kết nối thì Lead lưu việc đang chờ; không giả lập review
+thành công và không yêu cầu Owner chuyển từng gói kỹ thuật.
 
-**ChatGPT / Controller**
+## Kiểm tra bộ template
+Node.js 20+; không có npm dependency.
+```text
+npm test
+npm run workflow:check
+npm run pilot
+```
+Pilot dùng Git repo tạm và chương trình test giả lập; không gọi model hoặc dịch vụ thật.
 
-`Read .ai-workflow/prompts/CONTROLLER_BOOTSTRAP.md and take CONTROLLER role for the current authoritative task. Continue from current state.`
+Công cụ cho Lead (Owner không cần chạy):
+```text
+node scripts/workflow.mjs freeze <task.json>
+node scripts/workflow.mjs route <task.json> <profile.json>
+node scripts/workflow.mjs verify <task.json> <repo-directory> <evidence.json>
+node scripts/workflow.mjs status <task.json> <evidence.json> <review.json> <repo-directory>
+```
+Các file task/evidence đặt trong .workflow-local/ đã gitignore; profile example là
+mẫu, không chứng minh tài khoản đã sẵn sàng.
 
-**Antigravity / Gemini / Implementer**
+## Lưu trữ
+[legacy/v9.1.2](legacy/v9.1.2/README.md) giữ nguyên bộ v9 để đối chiếu/rollback.
+Không đọc luật legacy như chỉ dẫn đang hoạt động. Bộ v10 không cung cấp mức
+cách ly quyền Controller/Implementer hoặc kiểm chứng chống sửa giả của v9.
+Xem [giới hạn](.ai-workflow/V10_CANONICAL_SPEC.md).
 
-`Read .ai-workflow/prompts/IMPLEMENTER_BOOTSTRAP.md and take IMPLEMENTER role for the current Controller-authorized handoff. Execute only that attempt.`
-
-The Owner still only needs these two prompts. If the Controller reaches a valid
-technical step that its current chat cannot execute, such as a trusted
-`prepare-attempt.mjs` worktree transaction, it must create a bounded
-`TECHNICAL_OPERATOR_HANDOFF` for an authorized Technical Operator/Work
-environment rather than stopping or asking the Owner to run commands.
-
-## File-first exchange
-
-v9.1.2 keeps packet contents and authority unchanged, but exchanges packets as
-downloadable files rather than long chat copy-paste. The Controller creates the
-named handoff file; the receiving actor returns the named result file following
-the matching template. See `.ai-workflow/HANDOFF_FILES.md` for filenames and
-the concise Issue checkpoint format.
-
-Normal implementation exchange:
-
-- Controller -> Implementer: `TASK-<id>-implementer-handoff.md`;
-- Implementer -> Controller: `TASK-<id>-implementer-result.md`.
-
-Technical execution fallback when needed:
-
-- Controller -> Technical Operator/Work: `TASK-<id>-technical-operator-handoff.md`;
-- Technical Operator/Work -> Controller: `TASK-<id>-technical-operator-result.md`;
-- Controller independently verifies the returned digest/state before continuing.
-
-Qualified review exchange when required:
-
-- Controller -> Reviewer: `TASK-<id>-qualified-review-handoff.md`;
-- Reviewer -> Controller: `TASK-<id>-qualified-review.md`.
-
-The repository + authoritative task/Issue remain the shared source of truth.
-
-## Start a new project
-
-1. Create a repository from this template or copy the kit into an existing repo.
-2. Fill `.ai-workflow/PROJECT_PROFILE.json` from the example, including manual
-   role bindings and the Technical Operator environment-gap route.
-3. Read `.ai-workflow/BOOTSTRAP.md` and keep routing mode `MANUAL`.
-4. Create a task and its verification manifest from `.ai-workflow/templates/`.
-5. Freeze verification before implementation:
-
-   `npm run workflow:freeze -- path/to/verification-manifest.json`
-
-6. Follow `.ai-workflow/CONTROLLER_OPERATIONS.md` to create an external
-   Controller snapshot and publish its digest in the task issue. Run tools from
-   a trusted checkout, with the candidate directory as working directory.
-
-   `node <trusted-kit>/scripts/prepare-attempt.mjs <control.json> <pinned-digest> <new-path> <new-branch>`
-
-   If the current Controller session lacks that trusted Git environment, it must
-   route this exact operation through `TECHNICAL_OPERATOR_HANDOFF`; a normal
-   GitHub branch is not a substitute.
-
-7. Commit the candidate, bind its head and inspect the actual Git diff, then
-   publish the returned Controller digest before running frozen gates:
-
-   `node <trusted-kit>/scripts/inspect-risk.mjs <control.json> <pinned-digest> <candidate-head>`
-
-   `node <trusted-kit>/scripts/verify-task.mjs <manifest.json> <control.json> <new-pinned-digest> <external-evidence.json>`
-
-8. Generate the plain-language Owner handoff:
-
-   `npm run workflow:owner-status -- path/to/task.json`
-
-Run `npm test` to validate the kit and role isolation, and `npm run pilot` to
-execute the three hermetic GREEN, YELLOW, and escalation pilots.
-
-## Safety properties
-
-- deterministic evidence outranks model opinion;
-- verification criteria are hash-locked before implementation;
-- risk can increase after diff inspection and cannot decrease within a revision;
-- risk and complexity are separate fields;
-- every retry uses a clean worktree from the same approved baseline;
-- Controller and Implementer permissions remain separated;
-- Controller tool gaps route to Technical Operator instead of Owner debugging;
-- Technical Operator transactions preserve exact external Controller authority;
-- secrets are redacted at the command-output boundary;
-- high-risk work stops for a qualified reviewer and/or Technical Operator;
-- no unattended model routing is included in v9.1.
+Route chấp nhận --needs-repair khi xử lý lỗi và --quota-exhausted khi hết hạn mức.
+CLI này đề xuất quyết định; Lead lưu counter thực tế, không có vòng lặp tự chạy.

@@ -1,380 +1,153 @@
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { StringDecoder } from "node:string_decoder";
-import { assertActiveAttempt, cleanHead, git, readControl } from "./control.mjs";
+import { runRedacted, looksLikeSecretArgument, redactText } from "./redact.mjs";
 
-export const RISK_LEVELS = Object.freeze({ GREEN: 0, YELLOW: 1, RED: 2 });
-export const COMPLEXITY_LEVELS = Object.freeze(["S", "M", "L", "XL"]);
-
-export function assertRisk(value, field = "risk") {
-  if (!(value in RISK_LEVELS)) {
-    throw new Error(`${field} must be GREEN, YELLOW, or RED`);
-  }
-  return value;
+const sha=x=>/^[0-9a-f]{40}$/.test(x??"");
+const digest=x=>createHash("sha256").update(JSON.stringify(x)).digest("hex");
+const text=x=>typeof x==="string" && x.trim().length>0;
+const required=(ok,msg)=>{if(!ok)throw new Error(msg);};
+export const readJson=async p=>JSON.parse(await readFile(p,"utf8"));
+export const writeJson=(p,v,flag="w")=>writeFile(p,JSON.stringify(v,null,2)+"\n",{flag});
+export function contract(t){
+  const keys=["schema_version","task_id","revision","base_sha","goal","acceptance_criteria","gates","user_visible","risk","complexity"];
+  return Object.fromEntries(keys.map(k=>[k,t[k]]));
 }
-
-export function assertComplexity(value) {
-  if (!COMPLEXITY_LEVELS.includes(value)) {
-    throw new Error("complexity must be S, M, L, or XL");
+export const contractHash=t=>digest(contract(t));
+function assertSafeGateMetadata(gates){
+  // Reject before writing packets: evidence must retain exact, credential-free argv.
+  // Inspect every gate up front, including gates after an earlier failure.
+  for(const g of gates){
+    const values=[g.id,...g.argv];
+    required(values.every(value=>!looksLikeSecretArgument(value)&&redactText(value)===value)&&
+      !g.argv.some(value=>/^--?(?:password|passwd|secret|token|cookie|api[_-]?key|private[_-]?key)$/i.test(value)),
+      "Secret-like gate metadata rejected; use the account environment, not packet arguments");
   }
-  return value;
 }
-
-export function maxRisk(...values) {
-  return values.map((value) => assertRisk(value)).reduce(
-    (highest, current) =>
-      RISK_LEVELS[current] > RISK_LEVELS[highest] ? current : highest,
-    "GREEN",
-  );
+export function validateTask(t){
+  required(t?.schema_version==="qq.workflow.task.v10","unsupported task schema");
+  required(/^TASK-[A-Z0-9_-]+$/i.test(t.task_id??""),"invalid task id");
+  required(Number.isInteger(t.revision)&&t.revision>0,"invalid revision");
+  required(sha(t.base_sha),"invalid base SHA");
+  required(text(t.goal),"missing goal");
+  required(Array.isArray(t.acceptance_criteria)&&t.acceptance_criteria.length>0&&t.acceptance_criteria.every(text),"missing acceptance criteria");
+  required(Array.isArray(t.gates)&&t.gates.length>0,"missing gates");
+  const ids=new Set();
+  for(const g of t.gates){
+    required(text(g.id)&&!ids.has(g.id),"duplicate or missing gate id");ids.add(g.id);
+    required(Array.isArray(g.argv)&&g.argv.length>0&&g.argv.every(text),"invalid gate argv");
+    required(Number.isInteger(g.timeout_seconds)&&g.timeout_seconds>=1&&g.timeout_seconds<=3600,"invalid timeout");
+  }
+  required(typeof t.user_visible==="boolean","user_visible must be boolean");
+  required(["LOW","ELEVATED"].includes(t.risk),"invalid risk");
+  required(t.effective_risk===undefined||["LOW","ELEVATED"].includes(t.effective_risk),"invalid effective risk");
+  required(["SIMPLE","COMPLEX"].includes(t.complexity),"invalid complexity");
+  for(const k of ["repair_rounds","senior_passes"]) required(Number.isInteger(t[k])&&t[k]>=0,"invalid "+k);
+  required(t.repair_rounds<=2&&t.senior_passes<=1,"repair budget exceeded");
+  required(Array.isArray(t.implementer_sessions)&&t.implementer_sessions.every(text),"invalid implementer sessions");
+  return t;
 }
-
-function globToRegExp(glob) {
-  const normalized = glob.replaceAll("\\", "/");
-  let source = normalized.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  source = source.replaceAll("**/", "\u0001");
-  source = source.replaceAll("**", "\u0000");
-  source = source.replaceAll("*", "[^/]*");
-  source = source.replaceAll("?", "[^/]");
-  source = source.replaceAll("\u0000", ".*");
-  source = source.replaceAll("\u0001", "(?:.*/)?");
-  return new RegExp(`^${source}$`, "i");
+export function validateProfile(p){
+  required(p?.schema_version==="qq.workflow.profile.v10","unsupported profile");
+  required(p.billing==="SUBSCRIPTION_ONLY","paid fallback is not allowed");
+  required(p.routing_mode==="ASSISTED"&&p.bridge_installed===false,"LOCAL_AUTO requires the separate tested bridge; not shipped");
+  required(p.max_repairs===2&&p.max_senior_passes===1&&p.max_writers===1,"unsupported budget/concurrency");
+  for(const role of ["fast","senior","review"]){
+    const b=p.bindings?.[role];
+    required(b&&["google","openai"].includes(b.provider)&&typeof b.verified==="boolean","invalid binding");
+    required(!b.verified||text(b.model),"verified binding requires model");
+  }
+  return p;
 }
-
-export function matchesGlob(filePath, glob) {
-  return globToRegExp(glob).test(filePath.replaceAll("\\", "/"));
+export function route(t,p,{quotaAvailable=true,needsRepair=false}={}){
+  validateTask(t);validateProfile(p);
+  if(needsRepair&&t.senior_passes>=1) return {status:"BLOCKED_TECHNICAL",reason:"senior repair exhausted"};
+  if(!quotaAvailable)return {status:"WAITING_QUOTA",reason:"preserve counters; no paid fallback"};
+  const tier=t.risk==="ELEVATED"||t.effective_risk==="ELEVATED"||t.complexity==="COMPLEX"||t.repair_rounds>=2?"senior":"fast";
+  const binding=p.bindings[tier];
+  if(!binding.verified)return {status:"WAITING_CAPABILITY",tier,reason:"account/model not verified"};
+  return {status:"ROUTE_PROPOSED",tier,binding,invoked:false};
 }
-
-export function classifyRisk({
-  paths = [],
-  diffText = "",
-  declared = "GREEN",
-  priorEffective = "GREEN",
-  complexity = "S",
-  rules,
-}) {
-  assertRisk(declared, "declared risk");
-  assertRisk(priorEffective, "prior effective risk");
-  assertComplexity(complexity);
-  if (!rules || !Array.isArray(rules.rules)) {
-    throw new Error("risk rules must contain a rules array");
-  }
-
-  const matches = [];
-  for (const rule of rules.rules) {
-    assertRisk(rule.risk, `rule ${rule.id} risk`);
-    const matchedPaths = paths.filter((candidate) =>
-      (rule.path_globs ?? []).some((glob) => matchesGlob(candidate, glob)),
-    );
-    const matchedPatterns = (rule.diff_patterns ?? []).filter((pattern) =>
-      new RegExp(pattern, "i").test(diffText),
-    );
-    if (matchedPaths.length || matchedPatterns.length) {
-      matches.push({
-        id: rule.id,
-        risk: rule.risk,
-        reason: rule.reason,
-        matched_paths: matchedPaths,
-        matched_patterns: matchedPatterns,
-        required_roles: rule.required_roles ?? [],
-      });
-    }
-  }
-
-  const observed = matches.length
-    ? maxRisk(...matches.map((match) => match.risk))
-    : assertRisk(rules.default_risk ?? "GREEN", "default risk");
-  const effective = maxRisk(declared, priorEffective, observed);
-  const levelRoles = rules.level_controls?.[effective]?.required_roles ?? [];
-  const requiredRoles = [...new Set([...levelRoles, ...matches.flatMap((match) => match.required_roles)])].sort();
-
-  return {
-    schema_version: "qq.workflow.risk-decision.v9",
-    declared,
-    prior_effective: priorEffective,
-    observed,
-    effective,
-    complexity,
-    matches,
-    required_roles: requiredRoles,
-    action: effective === "RED" ? "STOP_AND_ESCALATE" : "CONTINUE_WITH_CONTROLS",
-  };
+export const git=(cwd,...args)=>execFileSync("git",args,{cwd,encoding:"utf8",maxBuffer:16*1024*1024});
+export function cleanHead(cwd,expected){
+  const head=git(cwd,"rev-parse","HEAD").trim();
+  required(!expected||head===expected,"candidate head changed");
+  required(git(cwd,"status","--porcelain","--untracked-files=all").trim()==="","candidate must be clean; ignore local packet directory");
+  return head;
 }
-
-export async function readJson(filePath) {
-  const raw = await readFile(filePath, "utf8");
-  return JSON.parse(raw);
+export async function freeze(taskPath){
+  const t=validateTask(await readJson(taskPath));
+  assertSafeGateMetadata(t.gates);
+  const hash=contractHash(t);
+  await writeJson(taskPath+".lock.json",{schema_version:"qq.workflow.lock.v10",task_id:t.task_id,revision:t.revision,contract_sha256:hash,effective_risk_floor:t.risk},"wx");
+  t.contract_sha256=hash;t.effective_risk=t.risk;await writeJson(taskPath,t);return {status:"FROZEN",contract_sha256:hash};
 }
-
-export async function writeJson(filePath, value) {
-  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+export async function assertContract(taskPath,t){
+  validateTask(t);
+  const lock=await readJson(taskPath+".lock.json");
+  required(lock.schema_version==="qq.workflow.lock.v10"&&lock.task_id===t.task_id&&lock.revision===t.revision&&
+    lock.contract_sha256===contractHash(t)&&t.contract_sha256===lock.contract_sha256,"contract changed or lock mismatch");
+  required(["LOW","ELEVATED"].includes(lock.effective_risk_floor),"invalid effective risk floor");
+  required(["LOW","ELEVATED"].includes(t.effective_risk),"missing effective risk");
+  required(!(t.risk==="ELEVATED"&&lock.effective_risk_floor!=="ELEVATED"),"risk floor below contract risk");
+  required(!(lock.effective_risk_floor==="ELEVATED"&&t.effective_risk!=="ELEVATED"),"effective risk cannot decrease within a revision");
+  return lock;
 }
-
-export async function sha256File(filePath) {
-  const bytes = await readFile(filePath);
-  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+export async function verify(taskPath,cwd){
+  const t=await readJson(taskPath);const lock=await assertContract(taskPath,t);
+  assertSafeGateMetadata(t.gates);
+  required(sha(t.candidate_head),"candidate head missing");
+  const head=cleanHead(cwd,t.candidate_head);
+  git(cwd,"merge-base","--is-ancestor",t.base_sha,head);
+  const paths=git(cwd,"diff","--no-renames","--name-only",t.base_sha,head);
+  const diff=git(cwd,"diff","--no-ext-diff","--no-textconv","--no-renames","--unified=0",t.base_sha,head);
+  const elevated=lock.effective_risk_floor==="ELEVATED"||t.risk==="ELEVATED"||t.effective_risk==="ELEVATED"||/(^|[/\n])(auth|permissions|migrations|supabase|database)([/\.\n])|(^|[/\n])\.env|rls|credential|secret/i.test(paths)||
+    /\b(DROP\s+(TABLE|DATABASE|SCHEMA)|TRUNCATE|DELETE\s+FROM)\b|service[_-]?role/i.test(diff);
+  t.effective_risk=elevated?"ELEVATED":"LOW";
+  await writeJson(taskPath,t);
+  if(elevated&&lock.effective_risk_floor!=="ELEVATED"){
+    lock.effective_risk_floor="ELEVATED";await writeJson(taskPath+".lock.json",lock);
+  }
+  const results=[];
+  for(const g of t.gates){
+    results.push({id:g.id,argv:g.argv,timeout_seconds:g.timeout_seconds,
+      ...await runRedacted(g.argv,{cwd,timeoutSeconds:g.timeout_seconds})});
+    if(results.at(-1).code!==0)break;
+  }
+  cleanHead(cwd,head);
+  const after=await readJson(taskPath);const afterLock=await assertContract(taskPath,after);
+  required(after.candidate_head===head&&after.effective_risk===t.effective_risk&&afterLock.effective_risk_floor===t.effective_risk&&contractHash(after)===contractHash(t),"task changed during gates");
+  return {schema_version:"qq.workflow.evidence.v10",task_id:t.task_id,revision:t.revision,
+    base_sha:t.base_sha,head,contract_sha256:t.contract_sha256,scope:"local",
+    effective_risk:t.effective_risk,recorded_at:new Date().toISOString(),
+    status:results.length===t.gates.length&&results.every(g=>g.code===0&&!g.timed_out)?"PASS":"FAIL",gates:results};
 }
-
-export function defaultLockPath(manifestPath) {
-  return manifestPath.endsWith(".json")
-    ? manifestPath.slice(0, -5) + ".lock.json"
-    : manifestPath + ".lock.json";
-}
-
-export function validateManifest(manifest) {
-  if (manifest.schema_version !== "qq.workflow.verification-manifest.v9") {
-    throw new Error("unsupported verification manifest schema");
+export function readiness(t,e,r){
+  validateTask(t);
+  const wait=reason=>({status:"NEEDS_FIX",reason});
+  if(!sha(t.candidate_head)||t.contract_sha256!==contractHash(t)||!["LOW","ELEVATED"].includes(t.effective_risk))return wait("contract/head invalid");
+  if(!t.implementer_sessions.length)return wait("missing implementation session identity");
+  if(!e||e.schema_version!=="qq.workflow.evidence.v10"||e.task_id!==t.task_id||e.revision!==t.revision||
+    e.base_sha!==t.base_sha||e.head!==t.candidate_head||e.contract_sha256!==t.contract_sha256||e.scope!=="local"||e.status!=="PASS"||
+    e.effective_risk!==t.effective_risk||!Array.isArray(e.gates)||e.gates.length!==t.gates.length)
+    return wait("missing, failed or stale verification");
+  for(let i=0;i<t.gates.length;i++){
+    const a=t.gates[i],b=e.gates[i];
+    if(b.id!==a.id||JSON.stringify(b.argv)!==JSON.stringify(a.argv)||b.timeout_seconds!==a.timeout_seconds||
+      b.code!==0||b.timed_out!==false||b.redaction_applied!==true)return wait("required gate not passed");
   }
-  if (!/^TASK-[A-Z0-9][A-Z0-9_-]*$/i.test(manifest.task_id ?? "")) {
-    throw new Error("manifest task_id is invalid");
-  }
-  if (!Number.isInteger(manifest.scope_revision) || manifest.scope_revision < 1) {
-    throw new Error("manifest scope_revision must be a positive integer");
-  }
-  if (!/^[0-9a-f]{40}$/i.test(manifest.base_sha ?? "")) {
-    throw new Error("manifest base_sha must be a full 40-character commit SHA");
-  }
-  if (!Array.isArray(manifest.acceptance_criteria) || !manifest.acceptance_criteria.length) {
-    throw new Error("manifest requires acceptance criteria");
-  }
-  if (!Array.isArray(manifest.gates) || !manifest.gates.length) {
-    throw new Error("manifest requires gates");
-  }
-  for (const gate of manifest.gates) {
-    if (!gate.id || !Array.isArray(gate.argv) || !gate.argv.length) {
-      throw new Error("each gate requires id and non-empty argv");
-    }
-    if (gate.argv.some((part) => typeof part !== "string" || part.length === 0)) {
-      throw new Error(`gate ${gate.id} argv must contain non-empty strings`);
-    }
-    if (!Number.isInteger(gate.timeout_seconds) || gate.timeout_seconds < 1 || gate.timeout_seconds > 3600) {
-      throw new Error(`gate ${gate.id} timeout_seconds must be 1..3600`);
-    }
-    if (gate.required !== true) {
-      throw new Error(`gate ${gate.id} must be explicitly required`);
-    }
-  }
-  return manifest;
-}
-
-export function secretEnvironmentValues(env = process.env) {
-  const namePattern = /(SECRET|TOKEN|PASSWORD|PASSWD|COOKIE|JWT|PRIVATE_KEY|API_KEY|ACCESS_KEY)/i;
-  return Object.entries(env)
-    .filter(([name, value]) => namePattern.test(name) && typeof value === "string" && value.length >= 8)
-    .map(([, value]) => value)
-    .sort((a, b) => b.length - a.length);
-}
-
-export function looksLikeSecretArgument(value) {
-  const patterns = [
-    /(?:^|[=:])(ghp_|github_pat_|sk-|xox[baprs]-)[A-Za-z0-9_-]{8,}/i,
-    /(?:password|passwd|secret|token|cookie|api[_-]?key|private[_-]?key)\s*[=:]\s*\S{4,}/i,
-    /Bearer\s+\S+/i,
-    /^[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}$/,
-  ];
-  return patterns.some((pattern) => pattern.test(value));
-}
-
-export function redactText(input, env = process.env) {
-  let output = String(input);
-  for (const value of secretEnvironmentValues(env)) {
-    output = output.split(value).join("[REDACTED_ENV_SECRET]");
-  }
-  const replacements = [
-    [/\b(?:set-cookie|cookie)\s*[:=][^\r\n]*/gi, "[REDACTED_COOKIE_HEADER]"],
-    [/\b(?:proxy-authorization|authorization)\s*:[^\r\n]*/gi, "[REDACTED_AUTHORIZATION_HEADER]"],
-    [/("[^"]*(?:password|passwd|secret|token|cookie|api[_-]?key|private[_-]?key)[^"]*"\s*:\s*)"(?:\\.|[^"\\])*"/gi, '$1"[REDACTED]"'],
-    [/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]"],
-    [/(?:ghp_|github_pat_|sk-|xox[baprs]-)[A-Za-z0-9_-]{8,}/gi, "[REDACTED_TOKEN]"],
-    [/\b[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\b/g, "[REDACTED_JWT]"],
-    [/(https?:\/\/)([^\s:@/]+):([^\s@/]+)@/gi, "$1[REDACTED_CREDENTIALS]@"],
-    [/\b(password|passwd|secret|token|cookie|api[_-]?key|private[_-]?key)\s*([=:])\s*([^\s,;]+)/gi, "$1$2[REDACTED]"],
-  ];
-  for (const [pattern, replacement] of replacements) {
-    output = output.replace(pattern, replacement);
-  }
-  return output;
-}
-
-function argvForPlatform(argv) {
-  if (process.platform === "win32" && ["npm", "npx"].includes(argv[0])) {
-    const cli = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", `${argv[0]}-cli.js`);
-    if (existsSync(cli)) return [process.execPath, cli, ...argv.slice(1)];
-  }
-  if (process.platform === "win32" && ["npm", "npx", "pnpm", "yarn"].includes(argv[0])) {
-    return [`${argv[0]}.cmd`, ...argv.slice(1)];
-  }
-  return argv;
-}
-
-// Buffer one bounded line only. Oversized lines are discarded in full, rather
-// than emitting a prefix that could contain part of a split secret.
-export function boundedOutput(env = process.env, limit = 32768) {
-  const decoder = new StringDecoder("utf8");
-  const suppress = secretEnvironmentValues(env).some(value => /[\r\n]/.test(value) || value.length > limit);
-  let line = "";
-  let output = "";
-  let dropping = false;
-  const append = (value) => { output = (output + value).slice(-limit); };
-  return {
-    push(chunk) {
-      if (suppress) return;
-      for (const character of decoder.write(chunk)) {
-        if (character === "\n") {
-          append(dropping ? "[REDACTED_OVERSIZED_LINE]\n" : redactText(line, env) + "\n");
-          line = "";
-          dropping = false;
-        } else if (!dropping) {
-          line += character;
-          if (line.length > limit) { line = ""; dropping = true; }
-        }
-      }
-    },
-    finish() {
-      if (suppress) return "[REDACTED_UNSAFE_SECRET_ENVIRONMENT]";
-      line += decoder.end();
-      append(dropping ? "[REDACTED_OVERSIZED_LINE]" : redactText(line, env));
-      line = "";
-      dropping = false;
-      return output;
-    },
-  };
-}
-
-export function inspectCandidate(cwd, control) {
-  cleanHead(cwd, control.candidate_head);
-  git(cwd, "merge-base", "--is-ancestor", control.base_sha, control.candidate_head);
-  // Disable rename collapsing: both removed and added paths participate.
-  const paths = git(cwd, "diff", "--no-renames", "--name-only", "-z",
-    control.base_sha, control.candidate_head).split("\0").filter(Boolean);
-  const diffText = git(cwd, "diff", "--text", "--no-ext-diff", "--no-textconv", "--no-renames",
-    "--unified=0", control.base_sha, control.candidate_head);
-  const decision = classifyRisk({ paths, diffText, declared: control.effective_risk,
-    priorEffective: control.effective_risk, complexity: control.complexity, rules: control.rules });
-  return { ...decision, paths, candidate_head: control.candidate_head, base_sha: control.base_sha };
-}
-
-export async function runRedacted(argv, { cwd = process.cwd(), timeoutSeconds = 300, env = process.env } = {}) {
-  if (!Array.isArray(argv) || argv.length === 0) {
-    throw new Error("argv must be a non-empty array");
-  }
-  if (argv.some((part) => looksLikeSecretArgument(part))) {
-    return {
-      code: 78,
-      timed_out: false,
-      stdout: "",
-      stderr: "BLOCKED: secret-like command argument rejected\n",
-      redaction_applied: true,
-    };
-  }
-
-  return await new Promise((resolve, reject) => {
-    const platformArgv = argvForPlatform(argv);
-    const child = spawn(platformArgv[0], platformArgv.slice(1), {
-      cwd,
-      env,
-      shell: false,
-      windowsHide: true,
-    });
-    const stdout = boundedOutput(env);
-    const stderr = boundedOutput(env);
-    let timedOut = false;
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
-    child.on("error", reject);
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-    }, timeoutSeconds * 1000);
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({
-        code: timedOut ? 124 : (code ?? 1),
-        timed_out: timedOut,
-        stdout: stdout.finish(),
-        stderr: stderr.finish(),
-        redaction_applied: true,
-      });
-    });
-  });
-}
-
-export async function verifyManifest(manifestPath, {
-  lockPath = defaultLockPath(manifestPath), cwd = process.cwd(), controlPath, controlDigest,
-} = {}) {
-  const { control } = await readControl(controlPath, controlDigest, cwd);
-  if (control.state !== "VERIFYING") throw new Error("Controller must authorize VERIFYING");
-  await assertActiveAttempt(control, cwd);
-  const candidateHead = cleanHead(cwd, control.candidate_head);
-  const manifest = validateManifest(await readJson(manifestPath));
-  const lock = await readJson(lockPath);
-  const actualHash = await sha256File(manifestPath);
-  if (actualHash !== control.manifest_sha256) throw new Error("external manifest anchor mismatch");
-  for (const field of ["task_id", "scope_revision", "base_sha"]) {
-    if (manifest[field] !== control[field]) throw new Error("Controller manifest identity mismatch");
-  }
-  const risk = inspectCandidate(cwd, control);
-  if (risk.effective !== control.effective_risk) throw new Error("Controller risk must be updated before verification");
-  if (risk.effective === "RED" && control.red_disposition_head !== candidateHead) {
-    throw new Error("RED requires Technical Operator disposition bound to candidate head");
-  }
-  if (lock.schema_version !== "qq.workflow.verification-lock.v9") {
-    throw new Error("unsupported verification lock schema");
-  }
-  for (const field of ["task_id", "scope_revision", "base_sha"]) {
-    if (lock[field] !== manifest[field]) {
-      throw new Error(`verification lock ${field} mismatch`);
-    }
-  }
-  if (lock.manifest_sha256 !== actualHash) {
-    throw new Error("verification manifest changed after freeze");
-  }
-
-  const startedAt = new Date();
-  const gateResults = [];
-  for (const gate of manifest.gates) {
-    const gateStarted = Date.now();
-    const result = await runRedacted(gate.argv, {
-      cwd: cwd ?? process.cwd(),
-      timeoutSeconds: gate.timeout_seconds,
-    });
-    gateResults.push({
-      id: gate.id,
-      argv_display: [gate.argv[0], ...gate.argv.slice(1).map(() => "<arg>")],
-      exit_code: result.code,
-      timed_out: result.timed_out,
-      duration_ms: Date.now() - gateStarted,
-      stdout: result.stdout,
-      stderr: result.stderr,
-      redaction_applied: result.redaction_applied,
-      verdict: result.code === 0 ? "PASS" : "FAIL",
-    });
-    if (gate.required && result.code !== 0) break;
-  }
-  cleanHead(cwd, candidateHead);
-  await readControl(controlPath, controlDigest, cwd);
-  if (await sha256File(manifestPath) !== actualHash) throw new Error("manifest changed during gates");
-
-  const pass = gateResults.length === manifest.gates.length && gateResults.every((gate) => gate.verdict === "PASS");
-  return {
-    schema_version: "qq.workflow.verification-evidence.v9",
-    task_id: manifest.task_id,
-    scope_revision: manifest.scope_revision,
-    base_sha: manifest.base_sha,
-    candidate_head: candidateHead,
-    controller_digest: controlDigest,
-    risk,
-    evidence_tier: manifest.evidence_tier,
-    manifest_sha256: actualHash,
-    started_at: startedAt.toISOString(),
-    finished_at: new Date().toISOString(),
-    gate_results: gateResults,
-    verdict: pass ? "PASS" : "FAIL",
-  };
-}
-
-export function resolveFrom(base, candidate) {
-  return path.resolve(base, candidate);
+  if(!r)return {status:"WAITING_CAPABILITY",reason:"independent review needed"};
+  if(r.schema_version!=="qq.workflow.review.v10"||r.task_id!==t.task_id||r.revision!==t.revision||
+    r.head!==t.candidate_head||r.contract_sha256!==t.contract_sha256||r.independent!==true||
+    !text(r.reviewer_session)||t.implementer_sessions.includes(r.reviewer_session))
+    return wait("review is stale or not independent");
+  if(r.verdict!=="PASS"||!Array.isArray(r.material_findings)||r.material_findings.length>0)
+    return wait("review has unresolved findings");
+  if((t.risk==="ELEVATED"||t.effective_risk==="ELEVATED"||e.effective_risk==="ELEVATED")&&r.risk_checks_completed!==true)
+    return wait("elevated risk review missing");
+  if(!t.user_visible)return {status:"DONE",merge_authorized:false};
+  const a=t.owner_acceptance;
+  if(a?.accepted===true&&a.head===t.candidate_head&&a.contract_sha256===t.contract_sha256&&text(a.source))
+    return {status:"DONE",merge_authorized:false};
+  return {status:"READY_FOR_OWNER",merge_authorized:false};
 }

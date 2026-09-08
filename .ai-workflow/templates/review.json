@@ -1,0 +1,13 @@
+{
+  "schema_version": "qq.workflow.review.v10",
+  "task_id": "TASK-EXAMPLE",
+  "revision": 1,
+  "head": null,
+  "contract_sha256": null,
+  "reviewer_session": null,
+  "independent": true,
+  "verdict": "BLOCKED",
+  "material_findings": [],
+  "summary": "Review has not run",
+  "risk_checks_completed": false
+}

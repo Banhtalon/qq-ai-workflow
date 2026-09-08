@@ -1,18 +1,16 @@
 {
   "name": "qq-ai-workflow",
-  "version": "9.1.2",
+  "version": "10.0.0-rc.1",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test",
-    "pilot": "node scripts/run-pilots.mjs",
-    "workflow:freeze": "node scripts/freeze-manifest.mjs",
-    "workflow:risk": "node scripts/inspect-risk.mjs",
-    "workflow:verify": "node scripts/verify-task.mjs",
-    "workflow:redact": "node scripts/run-redacted.mjs",
-    "workflow:attempt": "node scripts/prepare-attempt.mjs",
-    "workflow:owner-status": "node scripts/owner-status.mjs",
-    "workflow:install": "node scripts/install.mjs"
+    "test": "node --test test/workflow.test.mjs",
+    "workflow:check": "node scripts/check-kit.mjs",
+    "pilot": "node --test test/pilots.test.mjs",
+    "workflow:freeze": "node scripts/workflow.mjs freeze",
+    "workflow:route": "node scripts/workflow.mjs route",
+    "workflow:verify": "node scripts/workflow.mjs verify",
+    "workflow:owner-status": "node scripts/workflow.mjs status"
   },
   "engines": {
     "node": ">=20"
