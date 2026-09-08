@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
-import { runRedacted } from "./redact.mjs";
+import { runRedacted, looksLikeSecretArgument, redactText } from "./redact.mjs";
 
 const sha=x=>/^[0-9a-f]{40}$/.test(x??"");
 const digest=x=>createHash("sha256").update(JSON.stringify(x)).digest("hex");
@@ -14,6 +14,16 @@ export function contract(t){
   return Object.fromEntries(keys.map(k=>[k,t[k]]));
 }
 export const contractHash=t=>digest(contract(t));
+function assertSafeGateMetadata(gates){
+  // Reject before writing packets: evidence must retain exact, credential-free argv.
+  // Inspect every gate up front, including gates after an earlier failure.
+  for(const g of gates){
+    const values=[g.id,...g.argv];
+    required(values.every(value=>!looksLikeSecretArgument(value)&&redactText(value)===value)&&
+      !g.argv.some(value=>/^--?(?:password|passwd|secret|token|cookie|api[_-]?key|private[_-]?key)$/i.test(value)),
+      "Secret-like gate metadata rejected; use the account environment, not packet arguments");
+  }
+}
 export function validateTask(t){
   required(t?.schema_version==="qq.workflow.task.v10","unsupported task schema");
   required(/^TASK-[A-Z0-9_-]+$/i.test(t.task_id??""),"invalid task id");
@@ -67,6 +77,7 @@ export function cleanHead(cwd,expected){
 }
 export async function freeze(taskPath){
   const t=validateTask(await readJson(taskPath));
+  assertSafeGateMetadata(t.gates);
   const hash=contractHash(t);
   await writeJson(taskPath+".lock.json",{schema_version:"qq.workflow.lock.v10",task_id:t.task_id,revision:t.revision,contract_sha256:hash,effective_risk_floor:t.risk},"wx");
   t.contract_sha256=hash;t.effective_risk=t.risk;await writeJson(taskPath,t);return {status:"FROZEN",contract_sha256:hash};
@@ -84,6 +95,7 @@ export async function assertContract(taskPath,t){
 }
 export async function verify(taskPath,cwd){
   const t=await readJson(taskPath);const lock=await assertContract(taskPath,t);
+  assertSafeGateMetadata(t.gates);
   required(sha(t.candidate_head),"candidate head missing");
   const head=cleanHead(cwd,t.candidate_head);
   git(cwd,"merge-base","--is-ancestor",t.base_sha,head);
@@ -98,7 +110,8 @@ export async function verify(taskPath,cwd){
   }
   const results=[];
   for(const g of t.gates){
-    results.push({...g,...await runRedacted(g.argv,{cwd,timeoutSeconds:g.timeout_seconds})});
+    results.push({id:g.id,argv:g.argv,timeout_seconds:g.timeout_seconds,
+      ...await runRedacted(g.argv,{cwd,timeoutSeconds:g.timeout_seconds})});
     if(results.at(-1).code!==0)break;
   }
   cleanHead(cwd,head);

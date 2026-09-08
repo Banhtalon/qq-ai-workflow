@@ -12,6 +12,9 @@ No shared-secret or credential field is permitted.
 
 Verification: exact task_id/revision/base/head/contract_sha256, local scope, gates.
 Each result contains argv, timeout_seconds, code, timed_out, redacted output.
+Secret-like gate IDs or arguments block freeze/verification before packet writes or
+gate execution. Verification emits no new evidence for these invalid inputs; keep
+credentials in the account environment. Only declared gate fields enter evidence.
 Evidence effective_risk must equal the task's persisted effective_risk.
 Review: same task identity/head/hash, reviewer_session, independent, verdict,
 material_findings (array), summary. Verdict is PASS, NEEDS_FIX or BLOCKED.

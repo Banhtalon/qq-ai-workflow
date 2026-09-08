@@ -1,10 +1,62 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {writeFile} from "node:fs/promises";
+import {writeFile,readFile} from "node:fs/promises";
+import {spawnSync} from "node:child_process";
+import {fileURLToPath} from "node:url";
 import path from "node:path";
 import {fixture,review,profile} from "./fixture.mjs";
 import {validateTask,validateProfile,contractHash,writeJson,readJson,freeze,verify,readiness,route,git} from "../scripts/lib/workflow.mjs";
 import {runRedacted,redactText,argvForPlatform} from "../scripts/lib/redact.mjs";
+
+const cli=fileURLToPath(new URL("../scripts/workflow.mjs",import.meta.url));
+test("CLI rejects legacy secret-bearing gates without creating or overwriting evidence",async()=>{
+ const marker="synthetic-review-marker-012345";
+ for(const extra of [["token="+marker],["--token",marker],[marker]]){
+  const f=await fixture();try{
+   // Model a packet frozen by an older kit, before metadata validation existed.
+   f.task.gates[0].argv.push(...extra);
+   f.task.contract_sha256=contractHash(f.task);
+   await writeJson(f.taskPath,f.task);
+   const lock=await readJson(f.taskPath+".lock.json");
+   lock.contract_sha256=f.task.contract_sha256;await writeJson(f.taskPath+".lock.json",lock);
+   const out=path.join(f.dir,"evidence.json");
+   for(const existing of [false,true]){
+    if(existing)await writeFile(out,"existing evidence\n");
+    const result=spawnSync(process.execPath,[cli,"verify",f.taskPath,f.repo,out],
+     {encoding:"utf8",env:{...process.env,TEST_SECRET:marker}});
+    assert.equal(result.status,1);assert.match(result.stderr,/Secret-like gate metadata rejected/);
+    assert(!result.stdout.includes(marker));assert(!result.stderr.includes(marker));
+    if(existing)assert.equal(await readFile(out,"utf8"),"existing evidence\n");
+    else await assert.rejects(readFile(out),{code:"ENOENT"});
+   }
+   const unfrozen=path.join(f.dir,"unfrozen.json");
+   const unsafe=structuredClone(f.task);unsafe.gates[0].argv.push("token="+marker);
+   await writeJson(unfrozen,unsafe);
+   await assert.rejects(freeze(unfrozen),/Secret-like gate metadata rejected/);
+   await assert.rejects(readFile(unfrozen+".lock.json"),{code:"ENOENT"});
+  }finally{await f.cleanup();}
+ }
+});
+
+test("saved PASS and FAIL evidence redact output and omit extra gate metadata",async()=>{
+ for(const code of [0,3]){
+  const marker="synthetic-output-marker-012345";
+  const gate={id:"output",argv:[process.execPath,"-e",
+   `console.log(process.env.TEST_SECRET);console.error(process.env.TEST_SECRET);process.exit(${code})`],
+   timeout_seconds:2,extra:marker};
+  const f=await fixture([gate]);try{
+   const out=path.join(f.dir,"evidence.json");
+   const result=spawnSync(process.execPath,[cli,"verify",f.taskPath,f.repo,out],
+    {encoding:"utf8",env:{...process.env,TEST_SECRET:marker}});
+   assert.equal(result.status,code===0?0:1);
+   const raw=await readFile(out,"utf8"),e=JSON.parse(raw);
+   assert(!raw.includes(marker));assert(!result.stdout.includes(marker));assert(!result.stderr.includes(marker));
+   assert.equal(e.status,code===0?"PASS":"FAIL");assert.equal(e.gates[0].code,code);
+   assert.equal(e.gates[0].redaction_applied,true);assert(!("extra" in e.gates[0]));
+   assert.deepEqual(e.gates[0].argv,gate.argv);
+  }finally{await f.cleanup();}
+ }
+});
 
 test("real git candidate: gates, independent review, Owner acceptance",async()=>{
  const f=await fixture();try{
