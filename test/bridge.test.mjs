@@ -6,7 +6,7 @@ import {fixture} from './fixture.mjs';
 import {git,readJson,writeJson,freeze,verify} from '../scripts/lib/workflow.mjs';
 import {execute,subscriptionEnv,failureStatus} from '../scripts/lib/bridge-process.mjs';
 import {parseProtocol,invocation,assertSubscriptionSettings,protocolMetadata} from '../scripts/lib/bridge-adapters.mjs';
-import {runBridge,acquire} from '../scripts/lib/bridge.mjs';
+import {runBridge,acquire,reviewSource} from '../scripts/lib/bridge.mjs';
 
 async function setup(mode='repair') {
   const f=await fixture();git(f.repo,'switch','-c','feature');
@@ -121,6 +121,14 @@ test('worker cannot rewrite npm gate definitions even if mistakenly allowlisted'
     f.config.write_paths.push('package.json');
     const s=await f.run();assert.equal(s.status,'BLOCKED_TECHNICAL');assert.match(s.error,/protected task\/gate/);
     assert.equal(s.history.filter(h=>h.phase==='gates').length,0);
+  }finally{await f.cleanup();}
+});
+test('review packet captures real exact-head diff and complete changed source; stale/dirty is rejected',async()=>{
+  const f=await setup();try{
+    const source=reviewSource(f.repo,f.task,f.config);
+    assert.equal(source.head,f.task.candidate_head);assert.match(source.diff,/\+feature/);
+    assert.equal(source.files.find(f=>f.path==='feature.txt').content,'feature\n');
+    await writeFile(path.join(f.repo,'feature.txt'),'later edit');assert.throws(()=>reviewSource(f.repo,f.task,f.config),/clean/);
   }finally{await f.cleanup();}
 });
 test('aborting verification terminates active gate and prevents later gates',async()=>{

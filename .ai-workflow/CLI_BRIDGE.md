@@ -75,6 +75,12 @@ is worker-only: its `plan` mode is a prompt convention, not a write prohibition.
 Capability probes use a no-tools prompt and clean-tree checking.
 The reviewer
 receives actual evidence and base/head/contract; it never shares a worker session.
+Lead extracts the diff, full changed source and declared gate sources directly from
+Git at the candidate head into the review prompt (bounded to 256 KiB, refusing
+binary/secret-like content). This lets the fresh reviewer inspect source even when
+nested Windows shell tools are unavailable. Reviewer uses this packet without tools
+and must report missing context instead of assuming dependencies are correct. The
+execution record binds the source packet digest; stale/dirty candidates are refused.
 Findings are automatically passed to the next worker. Two repair rounds at the
 initial tier are followed by at most one senior pass. Counters survive pause/resume.
 Any remaining material failure is `BLOCKED_TECHNICAL`. Readiness uses existing
