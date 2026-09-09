@@ -41,9 +41,9 @@ export async function invocation(binding,{cwd,packetDir,role,prompt}) {
     }
     assertSubscriptionSettings(settings);
     const schema=path.join(packetDir,'result-schema.json');await writeFile(schema,JSON.stringify(resultSchema));
-    return {argv:[...b.command,'--input-format','stream-json','--output-format','stream-json','--json-schema',schema,
+    return {argv:[...b.command,'--add-dir',cwd,'--input-format','stream-json','--output-format','stream-json','--json-schema',schema,
       '--disable-slash-commands','--model',b.model,...(role==='worker'?['--mode','accept-edits']:[])],env,
-      input:JSON.stringify({event:'user',message:{content:prompt}})+'\n'};
+      input:JSON.stringify({event:'user',message:{content:`The task repository is ${cwd}. Work only in this directory, not the default CLI scratch directory. Use built-in file tools; do not invoke shell commands or delegate. The Lead runs git and gates.\n${prompt}`}})+'\n'};
   }
   const settings=path.join(packetDir,'gemini-subscription.json');
   await writeFile(settings,JSON.stringify({security:{auth:{selectedType:'oauth-personal',enforcedType:'oauth-personal'},enablePermanentToolApproval:false},general:{enableAutoUpdate:false},tools:{autoAccept:false},mcpServers:{}}));

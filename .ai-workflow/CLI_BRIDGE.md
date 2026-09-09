@@ -46,6 +46,9 @@ For Antigravity, Lead preconfigures scoped `permissions.allow` rules for
 Do not use `--dangerously-skip-permissions`. A headless soft-denial can exit 0 with
 an empty response; the bridge records its session and denied action names as
 `WAITING_CAPABILITY`, never as PASS. Inspect any partial edits before recovery.
+The adapter explicitly adds the task repository with `--add-dir` and names it in
+the packet; process cwd alone does not replace Antigravity's default scratch project.
+Google workers use built-in file tools while the Lead executes shell gates and Git.
 Worker code is committed on that feature branch only; the Lead must have task-level
 authorization to create those checkpoints. No push or merge occurs in the runner.
 Packets must live outside tracked source, normally in ignored `.workflow-local/`.
