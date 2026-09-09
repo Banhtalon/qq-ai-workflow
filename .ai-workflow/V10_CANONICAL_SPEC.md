@@ -73,6 +73,8 @@ No hosted, production, or live acceptance claim from local tests.
 ## Stage boundary
 ASSISTED is the default. Lead can execute locally and use already available
 independent sessions/tools; missing capability is WAITING_CAPABILITY.
-LOCAL_AUTO is a future bridge contract. It requires installation, actual account/model
-probes and a successful handoff/repair/quota pilot on Windows. Merely editing a config
-field is not sufficient; no bridge runner ships in this stage.
+The sequential CLI bridge can run explicit supervised pilots while ASSISTED.
+LOCAL_AUTO requires installation, actual account/model probes and a successful
+handoff/repair/quota pilot on Windows. Merely editing a config field is insufficient.
+Activation evidence binds the tested bridge source, account bindings and pilot state.
+See [CLI operations](CLI_BRIDGE.md) for commands and conservative interruption recovery.

@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test test/workflow.test.mjs",
+    "test": "node --test test/workflow.test.mjs test/bridge.test.mjs",
+    "bridge": "node scripts/bridge.mjs",
     "workflow:check": "node scripts/check-kit.mjs",
     "pilot": "node --test test/pilots.test.mjs",
     "workflow:freeze": "node scripts/workflow.mjs freeze",
