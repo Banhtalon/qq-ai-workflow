@@ -25,6 +25,9 @@ processes and forces ChatGPT authentication for Codex. Antigravity must have
 Lead sets/checks these preferences without reading account stores. This prevents
 automatic AI-credit fallback as well as API billing. Discover Google model slugs
 with `agy models`, then probe the chosen model through the actual account.
+Antigravity removes default-valued settings on exit; if the credit preference is
+omitted, the bridge explicitly writes it as false again before invocation. An
+enabled preference or API provider selection blocks the run for Lead inspection.
 The older Gemini adapter enforces `oauth-personal`; Codex ignores user configuration.
 Existing CLI account stores remain managed by the provider, never read by this kit.
 Google CLI settings and approved tools remain within the trusted local

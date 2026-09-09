@@ -30,7 +30,15 @@ export async function invocation(binding,{cwd,packetDir,role,prompt}) {
   if(b.cli!=='gemini'){
     if(role==='reviewer')throw Error('Antigravity plan is not a read-only permission boundary; configure Codex reviewer');
     // This is the non-secret preferences file, not the account/keyring store.
-    const settings=JSON.parse(await readFile(path.join(os.homedir(),'.gemini','antigravity-cli','settings.json'),'utf8'));
+    const settingsPath=path.join(os.homedir(),'.gemini','antigravity-cli','settings.json');
+    const settings=JSON.parse(await readFile(settingsPath,'utf8'));
+    // agy sparsely persists defaults and removes an explicit false on exit.
+    // Reassert the disabled preference before every process; never infer billing
+    // permission from an absent field and never accept an enabled preference.
+    if(settings.useG1Credits===undefined){
+      settings.useG1Credits=false;
+      await writeFile(settingsPath,JSON.stringify(settings,null,2)+'\n');
+    }
     assertSubscriptionSettings(settings);
     const schema=path.join(packetDir,'result-schema.json');await writeFile(schema,JSON.stringify(resultSchema));
     return {argv:[...b.command,'--input-format','stream-json','--output-format','stream-json','--json-schema',schema,
