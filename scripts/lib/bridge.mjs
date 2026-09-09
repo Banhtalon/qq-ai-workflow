@@ -18,7 +18,9 @@ export function validateConfig(c) {
   required(['ASSISTED','LOCAL_AUTO'].includes(c.mode),'invalid bridge mode');
   required(Number.isInteger(c.timeout_seconds)&&c.timeout_seconds>=1&&c.timeout_seconds<=3600,'invalid CLI timeout');
   required(Array.isArray(c.write_paths)&&c.write_paths.length>0&&c.write_paths.every(p=>typeof p==='string'&&p&&!path.isAbsolute(p)&&!p.includes('\\')&&!p.split('/').some(s=>['..','.',''].includes(s))),'explicit relative write_paths required');
+  required(Array.isArray(c.gate_paths)&&c.gate_paths.every(p=>typeof p==='string'&&p&&!path.isAbsolute(p)&&!p.includes('\\')&&!p.split('/').some(s=>['..','.',''].includes(s))),'explicit gate_paths required, including indirect gate dependencies');
   for(const role of ['worker','reviewer','senior'])validateBinding(c[role]);
+  required(c.reviewer.provider==='openai'||c.reviewer.cli==='gemini','Antigravity supports worker only; configure a read-only Codex reviewer');
   return c;
 }
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
@@ -69,8 +71,8 @@ Task: ${JSON.stringify(t)}
 Previous findings and evidence: ${JSON.stringify(feedback)}
 Return only JSON matching: {"verdict":"PASS or NEEDS_FIX or BLOCKED","summary":"concise factual result","material_findings":["concrete issue"],"risk_checks_completed":true}. PASS must have zero material findings. Never claim tests you did not run.`;
 }
-function protectedPaths(t) {
-  return ['AGENTS.md','GEMINI.md','.ai-workflow','.workflow-local',...t.gates.flatMap(g=>g.argv.slice(1).filter(x=>/\.(?:[cm]?js|json|py|ps1|sh)$/.test(x)))];
+function protectedPaths(t,config) {
+  return ['AGENTS.md','GEMINI.md','.ai-workflow','.workflow-local','package.json','package-lock.json','npm-shrinkwrap.json','test','tests',...config.gate_paths,...t.gates.flatMap(g=>g.argv.slice(1).filter(x=>/\.(?:[cm]?js|json|py|ps1|sh)$/.test(x)))];
 }
 function checkpoint(cwd) {return {head:cleanHead(cwd),branch:git(cwd,'symbolic-ref','--short','HEAD').trim()};}
 
@@ -118,9 +120,9 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
       state.status='RUNNING';state.in_flight={id:randomUUID(),phase:role,head:state.head,started_at:new Date().toISOString()};await save();
       if(role==='gates') {
         t.candidate_head=state.head;await writeJson(taskPath,t);
-        const evidence=await verify(taskPath,cwd);await atomicJson(path.join(packetDir,'evidence.json'),evidence);
+        const evidence=await verify(taskPath,cwd,{signal});await atomicJson(path.join(packetDir,'evidence.json'),evidence);
         state.history.push({phase:role,head:state.head,evidence});
-        if(evidence.gates.some(g=>g.timed_out)){state.status='BLOCKED_TECHNICAL';state.reconciliation_required=true;await save();return state;}
+        if(evidence.gates.some(g=>g.timed_out||g.interrupted)){state.status='BLOCKED_TECHNICAL';state.reconciliation_required=true;await save();return state;}
         state.in_flight=null;state.feedback=evidence;
         state.phase=evidence.status==='PASS'?'reviewer':'repair';await save();continue;
       }
@@ -147,7 +149,7 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
         required(!git(cwd,'diff','--cached','--name-only').trim(),'agent staged changes');
         const paths=changed.split('\0').filter(Boolean).map(x=>x.slice(3));
         required(paths.every(p=>config.write_paths.includes(p)),'worker exceeded write_paths');
-        required(paths.every(p=>!protectedPaths(t).some(x=>p===x||p.startsWith(x+'/'))),'worker touched protected task/gate paths');
+        required(paths.every(p=>!protectedPaths(t,config).some(x=>p===x||p.startsWith(x+'/'))),'worker touched protected task/gate paths');
         required(!paths.some(p=>/(^|\/)\.env(?:\.|$)|credential|oauth|auth\.json/i.test(p)),'credential-like file must be inspected by Lead');
         for(const p of paths){
           try {

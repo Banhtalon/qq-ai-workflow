@@ -93,7 +93,7 @@ export async function assertContract(taskPath,t){
   required(!(lock.effective_risk_floor==="ELEVATED"&&t.effective_risk!=="ELEVATED"),"effective risk cannot decrease within a revision");
   return lock;
 }
-export async function verify(taskPath,cwd){
+export async function verify(taskPath,cwd,{signal}={}){
   const t=await readJson(taskPath);const lock=await assertContract(taskPath,t);
   assertSafeGateMetadata(t.gates);
   required(sha(t.candidate_head),"candidate head missing");
@@ -111,7 +111,7 @@ export async function verify(taskPath,cwd){
   const results=[];
   for(const g of t.gates){
     results.push({id:g.id,argv:g.argv,timeout_seconds:g.timeout_seconds,
-      ...await runRedacted(g.argv,{cwd,timeoutSeconds:g.timeout_seconds})});
+      ...await runRedacted(g.argv,{cwd,timeoutSeconds:g.timeout_seconds,signal})});
     if(results.at(-1).code!==0)break;
   }
   cleanHead(cwd,head);

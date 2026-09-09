@@ -8,26 +8,36 @@ are not account verification or automatic-mode activation.
 
 ## Lead setup
 
-Use Node 20+, Git, the official Codex CLI and official Gemini CLI. Read their
+Use Node 20+, Git, the official Codex CLI and official Antigravity CLI. Read their
 installed `--help` and `--version`; CLI flags may change. On Windows configure
-an executable or `node` plus the actual Gemini JS entry point from the installed
-package's `bin` field. Never spawn a `.cmd` shim or a shell command string.
+an executable (`codex.exe`, `agy.exe`). The optional older `cli: "gemini"` adapter
+uses `node` plus the Gemini JS entry point from its package's `bin` field, but Google
+no longer serves individual subscriptions through that client. Never spawn a `.cmd`
+shim or a shell command string.
 Keep account installation outside the repository and configuration in
 `.workflow-local/`. Do not copy authentication files or tokens into packets.
 
-Owner signs in using official `codex login` (ChatGPT) and interactive `gemini`
+Owner signs in using official `codex login` (ChatGPT) and interactive `agy`
 (Sign in with Google using the AI Pro account). The bridge does not handle login
 screens. It removes API credentials/provider environment overrides from child
-processes, forces ChatGPT authentication for Codex and Google OAuth for Gemini.
-Google CLI settings enforce `oauth-personal`; Codex ignores user configuration.
+processes and forces ChatGPT authentication for Codex. Antigravity must have
+`useG1Credits: false` and no `modelProvider` override in its non-secret settings;
+Lead sets/checks these preferences without reading account stores. This prevents
+automatic AI-credit fallback as well as API billing. Discover Google model slugs
+with `agy models`, then probe the chosen model through the actual account.
+The older Gemini adapter enforces `oauth-personal`; Codex ignores user configuration.
 Existing CLI account stores remain managed by the provider, never read by this kit.
-Gemini repository settings and approved tools remain within the trusted local
+Google CLI settings and approved tools remain within the trusted local
 operator boundary; this is not an adversarial OS isolation system.
 
 Freeze a task before running, with a feature branch, clean working tree and fixed
 gates. Configure exact relative `write_paths` for this one feature. The bridge
-rejects edits to instructions, workflow packets, gate script paths, files outside
-that list, symlinks, binary files and secret-like content before committing.
+rejects edits to instructions, workflow packets, package manifests, test directories,
+gate script paths and explicit `gate_paths`, files outside that list, symlinks,
+binary files and secret-like content before committing. Lead lists indirect gate
+dependencies (custom runners, fixtures and gate configuration outside standard test
+directories) in `gate_paths` before the run. This list is bound into the checkpoint
+config digest and cannot change on resume.
 Worker code is committed on that feature branch only; the Lead must have task-level
 authorization to create those checkpoints. No push or merge occurs in the runner.
 Packets must live outside tracked source, normally in ignored `.workflow-local/`.
@@ -49,7 +59,10 @@ No model catalog is guessed from an account name or subscription label.
 
 The runner holds an exclusive lock in the Git common directory, including across
 linked worktrees. It invokes one worker, commits the allowed changes, runs the frozen
-gates, then invokes a fresh reviewer with read-only/plan permissions. The reviewer
+gates, then invokes a fresh Codex reviewer with read-only permissions. Antigravity
+is worker-only: its `plan` mode is a prompt convention, not a write prohibition.
+Capability probes use plan mode with a no-tools prompt and clean-tree checking.
+The reviewer
 receives actual evidence and base/head/contract; it never shares a worker session.
 Findings are automatically passed to the next worker. Two repair rounds at the
 initial tier are followed by at most one senior pass. Counters survive pause/resume.
@@ -100,6 +113,11 @@ Owner functional acceptance and merge approval remain separate.
 - [Codex authentication](https://learn.chatgpt.com/docs/auth)
 - [Gemini authentication](https://geminicli.com/docs/get-started/authentication/)
 - [Gemini headless execution](https://geminicli.com/docs/cli/headless/)
+- [Google's individual-account CLI transition](https://github.com/google-gemini/gemini-cli/discussions/28017)
+- [Antigravity installation and account authentication](https://antigravity.google/docs/cli/install/)
+- [Antigravity headless JSON protocol](https://antigravity.google/docs/cli/headless/)
+- [Antigravity execution modes](https://antigravity.google/docs/cli/modes/)
+- [Antigravity credit settings](https://antigravity.google/docs/cli/settings)
 
 Installed-version checks and probe outcomes belong in local evidence, not in this
 template as a claim that another laptop is ready. `mindx-review-bot` is out of scope.

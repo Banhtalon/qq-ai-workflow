@@ -4,7 +4,8 @@
   "mode": "ASSISTED",
   "timeout_seconds": 300,
   "write_paths": ["src/example.mjs"],
-  "worker": {"provider": "google", "command": ["node", "REPLACE_WITH_GEMINI_JS_ENTRYPOINT"], "model": "REPLACE_WITH_PROBED_MODEL"},
+  "gate_paths": ["test", "scripts/check-kit.mjs"],
+  "worker": {"provider": "google", "cli": "antigravity", "command": ["agy"], "model": "REPLACE_WITH_PROBED_MODEL"},
   "reviewer": {"provider": "openai", "command": ["codex"], "model": "REPLACE_WITH_PROBED_MODEL"},
   "senior": {"provider": "openai", "command": ["codex"], "model": "REPLACE_WITH_PROBED_MODEL"}
 }

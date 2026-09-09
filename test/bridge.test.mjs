@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import {writeFile,readFile,mkdir} from 'node:fs/promises';
 import {fixture} from './fixture.mjs';
-import {git,readJson,writeJson} from '../scripts/lib/workflow.mjs';
+import {git,readJson,writeJson,freeze,verify} from '../scripts/lib/workflow.mjs';
 import {execute,subscriptionEnv,failureStatus} from '../scripts/lib/bridge-process.mjs';
-import {parseProtocol,invocation} from '../scripts/lib/bridge-adapters.mjs';
+import {parseProtocol,invocation,assertSubscriptionSettings} from '../scripts/lib/bridge-adapters.mjs';
 import {runBridge,acquire} from '../scripts/lib/bridge.mjs';
 
 async function setup(mode='repair') {
@@ -25,6 +25,7 @@ if(!probe&&mode==='self'){}
 if(!probe&&worker){writeFileSync('feature.txt',input.includes('fix the fixture')?'repaired\\n':'written\\n');}
 if(!probe&&mode==='review-write'&&!worker)writeFileSync('feature.txt','reviewer mutation');
 if(!probe&&mode==='out-of-scope'&&worker)writeFileSync('unexpected.txt','oops');
+if(!probe&&mode==='weaken-gate'&&worker)writeFileSync('package.json',JSON.stringify({scripts:{test:'node -e "process.exit(0)"'}}));
 const fail=!probe&&!worker&&(mode==='always-fail'||(mode==='repair'&&readFileSync('feature.txt','utf8')!=='repaired\\n'));
 const result={verdict:fail?'NEEDS_FIX':'PASS',summary:'fake process',material_findings:fail?['fix the fixture']:[],risk_checks_completed:true};
 console.log(JSON.stringify({type:'thread.started',thread_id:mode==='self'?'same-session':randomUUID()}));
@@ -32,7 +33,7 @@ console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',tex
 console.log(JSON.stringify({type:'turn.completed'}));
 `);
   const binding={provider:'openai',model:'fixture',command:[process.execPath,cli]};
-  const config={schema_version:'qq.bridge.v1',billing:'SUBSCRIPTION_ONLY',mode:'ASSISTED',timeout_seconds:2,write_paths:['feature.txt'],worker:binding,reviewer:binding,senior:binding};
+  const config={schema_version:'qq.bridge.v1',billing:'SUBSCRIPTION_ONLY',mode:'ASSISTED',timeout_seconds:2,write_paths:['feature.txt'],gate_paths:[],worker:binding,reviewer:binding,senior:binding};
   const packetDir=path.join(f.dir,'packets');
   return {...f,config,packetDir,run:(extra={})=>runBridge({cwd:f.repo,taskPath:f.taskPath,config,packetDir,pilot:true,...extra})};
 }
@@ -92,10 +93,18 @@ test('subscription environment and adapters prevent API fallback and preserve ar
   const f=await setup();try{
     const spec=await invocation(f.config.worker,{cwd:f.repo,packetDir:f.packetDir,role:'reviewer',prompt:'a & b $(not-shell)'});
     assert(spec.argv.includes('read-only'));assert(spec.argv.includes('forced_login_method="chatgpt"'));assert.equal(spec.input,'a & b $(not-shell)');
-    const google=await invocation({...f.config.worker,provider:'google'},{cwd:f.repo,packetDir:f.packetDir,role:'reviewer',prompt:'probe'});
+    const google=await invocation({...f.config.worker,provider:'google',cli:'gemini'},{cwd:f.repo,packetDir:f.packetDir,role:'reviewer',prompt:'probe'});
     assert(google.argv.includes('plan'));const settings=await readJson(google.env.GEMINI_CLI_SYSTEM_SETTINGS_PATH);
     assert.equal(settings.security.auth.enforcedType,'oauth-personal');
   }finally{await f.cleanup();}
+});
+test('Antigravity terminal envelope and billing settings fail closed',()=>{
+  const result={verdict:'PASS',summary:'actual payload',material_findings:[],risk_checks_completed:false};
+  const event={event:'result',result:{status:'SUCCESS',conversation_id:'agy-session',structured_output:result}};
+  const parsed=parseProtocol('google',JSON.stringify(event),'antigravity');assert.equal(parsed.session_id,'agy-session');
+  for(const status of ['ERROR','WAITING','RUNNING','INTERRUPTED'])assert.throws(()=>parseProtocol('google',JSON.stringify({...event,result:{...event.result,status}}),'antigravity'));
+  assert.throws(()=>assertSubscriptionSettings({}));assert.throws(()=>assertSubscriptionSettings({useG1Credits:true}));
+  assert.throws(()=>assertSubscriptionSettings({useG1Credits:false,modelProvider:'gemini'}));assertSubscriptionSettings({useG1Credits:false});
 });
 test('bounded output and cancellation kill real processes',async()=>{
   const overflow=await execute([process.execPath,'-e',"console.log('x'.repeat(5000));setInterval(()=>{},1000)"],{maxBytes:100});
@@ -103,4 +112,21 @@ test('bounded output and cancellation kill real processes',async()=>{
   const controller=new AbortController();setTimeout(()=>controller.abort(),100);
   const cancelled=await execute([process.execPath,'-e','setInterval(()=>{},1000)'],{signal:controller.signal});
   assert.equal(cancelled.reason,'INTERRUPTED');
+});
+test('worker cannot rewrite npm gate definitions even if mistakenly allowlisted',async()=>{
+  const f=await setup('weaken-gate');try{
+    f.config.write_paths.push('package.json');
+    const s=await f.run();assert.equal(s.status,'BLOCKED_TECHNICAL');assert.match(s.error,/protected task\/gate/);
+    assert.equal(s.history.filter(h=>h.phase==='gates').length,0);
+  }finally{await f.cleanup();}
+});
+test('aborting verification terminates active gate and prevents later gates',async()=>{
+  const f=await fixture([{id:'wait',argv:[process.execPath,'-e','setTimeout(()=>console.log("should not finish"),10000)'],timeout_seconds:20},
+    {id:'later',argv:[process.execPath,'-e','console.log("should not run")'],timeout_seconds:2}]);
+  try{
+    const controller=new AbortController();setTimeout(()=>controller.abort(),200);
+    const started=Date.now(),e=await verify(f.taskPath,f.repo,{signal:controller.signal});
+    assert.equal(e.status,'FAIL');assert.equal(e.gates.length,1);assert.equal(e.gates[0].interrupted,true);assert.equal(e.gates[0].code,130);
+    assert(!e.gates[0].stdout.includes('should not finish'));assert(Date.now()-started<8000);
+  }finally{await f.cleanup();}
 });

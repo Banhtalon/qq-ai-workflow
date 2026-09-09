@@ -6,7 +6,7 @@ import {argvForPlatform, redactText, looksLikeSecretArgument} from './redact.mjs
 export function subscriptionEnv(source=process.env) {
   return Object.fromEntries(Object.entries(source).filter(([k]) =>
     !/(SECRET|TOKEN|PASSWORD|PASSWD|COOKIE|JWT|PRIVATE_KEY|API_KEY|ACCESS_KEY)/i.test(k) &&
-    !/^(OPENAI_|AZURE_|GOOGLE_|GCLOUD_|CLOUDSDK_|GEMINI_|CODEX_API|CODEX_HOME)/i.test(k)));
+    !/^(OPENAI_|AZURE_|GOOGLE_|GCLOUD_|CLOUDSDK_|GEMINI_|ANTIGRAVITY_|AGY_|CODEX_API|CODEX_HOME)/i.test(k)));
 }
 
 // Raw bounded output exists only in memory for protocol parsing. Callers persist

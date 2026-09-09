@@ -1,5 +1,6 @@
 import path from 'node:path';
-import {writeFile,mkdir} from 'node:fs/promises';
+import {writeFile,mkdir,readFile} from 'node:fs/promises';
+import os from 'node:os';
 import {execute,subscriptionEnv,failureStatus,safe} from './bridge-process.mjs';
 
 export const resultSchema={type:'object',additionalProperties:false,required:['verdict','summary','material_findings','risk_checks_completed'],properties:{
@@ -13,6 +14,7 @@ export function validateBinding(b) {
   // can override sandbox, auth, resume, output protocol or provider settings.
   if(b.command.length>2||(b.command.length===2&&(!/node(?:\.exe)?$/i.test(b.command[0])||! /\.(?:mjs|cjs|js)$/i.test(b.command[1]))))throw Error('binding must be executable or node entry point');
   if(b.effort!=null&&!['low','medium','high','xhigh','max','ultra'].includes(b.effort))throw Error('invalid effort');
+  if(b.provider==='google'&&b.cli!=null&&!['gemini','antigravity'].includes(b.cli))throw Error('invalid Google CLI');
   return b;
 }
 export async function invocation(binding,{cwd,packetDir,role,prompt}) {
@@ -25,13 +27,27 @@ export async function invocation(binding,{cwd,packetDir,role,prompt}) {
     if(b.effort)args.push('-c',`model_reasoning_effort="${b.effort}"`);
     args.push('-');return {argv:args,env,input:prompt};
   }
+  if(b.cli!=='gemini'){
+    if(role==='reviewer')throw Error('Antigravity plan is not a read-only permission boundary; configure Codex reviewer');
+    // This is the non-secret preferences file, not the account/keyring store.
+    const settings=JSON.parse(await readFile(path.join(os.homedir(),'.gemini','antigravity-cli','settings.json'),'utf8'));
+    assertSubscriptionSettings(settings);
+    const schema=path.join(packetDir,'result-schema.json');await writeFile(schema,JSON.stringify(resultSchema));
+    return {argv:[...b.command,'--input-format','stream-json','--output-format','stream-json','--json-schema',schema,
+      '--disable-slash-commands','--model',b.model,'--mode',role==='worker'?'accept-edits':'plan'],env,
+      input:JSON.stringify({event:'user',message:{content:prompt}})+'\n'};
+  }
   const settings=path.join(packetDir,'gemini-subscription.json');
   await writeFile(settings,JSON.stringify({security:{auth:{selectedType:'oauth-personal',enforcedType:'oauth-personal'},enablePermanentToolApproval:false},general:{enableAutoUpdate:false},tools:{autoAccept:false},mcpServers:{}}));
   env.GEMINI_CLI_SYSTEM_SETTINGS_PATH=settings;
   return {argv:[...b.command,'--model',b.model,'--approval-mode',role==='worker'?'auto_edit':'plan','--output-format','json','--extensions','none','--prompt','Follow the task supplied on stdin.'],env,input:prompt};
 }
 
-export function parseProtocol(provider,stdout) {
+export function assertSubscriptionSettings(settings){
+  if(settings.useG1Credits!==false||settings.modelProvider)throw Error('Antigravity requires useG1Credits=false and default account provider; no API/credit fallback');
+}
+
+export function parseProtocol(provider,stdout,cli='gemini') {
   let session,models=[],body;
   if(provider==='openai') {
     const events=stdout.trim().split(/\r?\n/).map(line=>JSON.parse(line));
@@ -41,6 +57,13 @@ export function parseProtocol(provider,stdout) {
     const messages=events.filter(e=>e.type==='item.completed'&&e.item?.type==='agent_message');
     body=messages.at(-1)?.item.text;
     models=[...new Set(events.flatMap(e=>e.model?[e.model]:[]))];
+  } else if(cli==='antigravity') {
+    const events=stdout.trim().split(/\r?\n/).map(line=>JSON.parse(line));
+    const results=events.filter(e=>e.event==='result');
+    if(results.length!==1||results[0].result?.status!=='SUCCESS')throw Error('incomplete Antigravity protocol');
+    const response=results[0].result;session=response.conversation_id;
+    models=[...new Set(events.flatMap(e=>e.init?.model?[e.init.model]:[]))];
+    body=response.structured_output?JSON.stringify(response.structured_output):response.response;
   } else {
     const response=JSON.parse(stdout);if(response.error)throw Error('Gemini protocol error');
     session=response.session_id;models=Object.keys(response.stats?.models??{});body=response.response;
@@ -58,7 +81,7 @@ export async function invoke(binding,options) {
   const r=await execute(spec.argv,{...spec,cwd:options.cwd,timeoutSeconds:options.timeoutSeconds,signal:options.signal});
   const record=safe({provider:binding.provider,requested_model:binding.model,argv:spec.argv,code:r.code,reason:r.reason,
     started_at:r.started_at,finished_at:r.finished_at,status:failureStatus(r)});
-  if(!record.status){try{Object.assign(record,parseProtocol(binding.provider,r.stdout));}catch{record.status='BLOCKED_TECHNICAL';record.reason='INVALID_PROTOCOL';}}
+  if(!record.status){try{Object.assign(record,parseProtocol(binding.provider,r.stdout,binding.cli??'antigravity'));}catch{record.status='BLOCKED_TECHNICAL';record.reason='INVALID_PROTOCOL';}}
   return record;
 }
 
@@ -73,7 +96,9 @@ export async function doctor(binding,{cwd,packetDir,probe=false,signal}={}) {
     report.auth='CHATGPT';
   }
   if(!probe)return report;
-  const result=await invoke(binding,{cwd,packetDir,role:'reviewer',timeoutSeconds:90,signal,
+  let result;
+  try{result=await invoke(binding,{cwd,packetDir,role:'probe',timeoutSeconds:90,signal,
     prompt:'Capability probe. Do not use tools or change files. Reply only with JSON: {"verdict":"PASS","summary":"subscription CLI probe","material_findings":[],"risk_checks_completed":false}'});
+  }catch{return {...report,status:'WAITING_CAPABILITY',auth:'SUBSCRIPTION_CONFIGURATION_REQUIRED'};}
   return {...report,status:result.status??'PROBED',auth:result.status?report.auth:binding.provider==='google'?'GOOGLE_OAUTH':'CHATGPT',structured_output:!result.status,execution:result};
 }
