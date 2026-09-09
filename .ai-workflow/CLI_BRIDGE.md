@@ -41,6 +41,11 @@ binary files and secret-like content before committing. Lead lists indirect gate
 dependencies (custom runners, fixtures and gate configuration outside standard test
 directories) in `gate_paths` before the run. This list is bound into the checkpoint
 config digest and cannot change on resume.
+For Antigravity, Lead preconfigures scoped `permissions.allow` rules for
+`read_file(<absolute-repo>)` and `write_file(<absolute-allowed-file>)` in its settings.
+Do not use `--dangerously-skip-permissions`. A headless soft-denial can exit 0 with
+an empty response; the bridge records its session and denied action names as
+`WAITING_CAPABILITY`, never as PASS. Inspect any partial edits before recovery.
 Worker code is committed on that feature branch only; the Lead must have task-level
 authorization to create those checkpoints. No push or merge occurs in the runner.
 Packets must live outside tracked source, normally in ignored `.workflow-local/`.
@@ -64,7 +69,7 @@ The runner holds an exclusive lock in the Git common directory, including across
 linked worktrees. It invokes one worker, commits the allowed changes, runs the frozen
 gates, then invokes a fresh Codex reviewer with read-only permissions. Antigravity
 is worker-only: its `plan` mode is a prompt convention, not a write prohibition.
-Capability probes use plan mode with a no-tools prompt and clean-tree checking.
+Capability probes use a no-tools prompt and clean-tree checking.
 The reviewer
 receives actual evidence and base/head/contract; it never shares a worker session.
 Findings are automatically passed to the next worker. Two repair rounds at the

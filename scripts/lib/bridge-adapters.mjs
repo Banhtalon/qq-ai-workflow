@@ -42,7 +42,7 @@ export async function invocation(binding,{cwd,packetDir,role,prompt}) {
     assertSubscriptionSettings(settings);
     const schema=path.join(packetDir,'result-schema.json');await writeFile(schema,JSON.stringify(resultSchema));
     return {argv:[...b.command,'--input-format','stream-json','--output-format','stream-json','--json-schema',schema,
-      '--disable-slash-commands','--model',b.model,'--mode',role==='worker'?'accept-edits':'plan'],env,
+      '--disable-slash-commands','--model',b.model,...(role==='worker'?['--mode','accept-edits']:[])],env,
       input:JSON.stringify({event:'user',message:{content:prompt}})+'\n'};
   }
   const settings=path.join(packetDir,'gemini-subscription.json');
@@ -53,6 +53,14 @@ export async function invocation(binding,{cwd,packetDir,role,prompt}) {
 
 export function assertSubscriptionSettings(settings){
   if(settings.useG1Credits!==false||settings.modelProvider)throw Error('Antigravity requires useG1Credits=false and default account provider; no API/credit fallback');
+}
+
+export function protocolMetadata(provider,stdout,cli) {
+  const events=stdout.trim().split(/\r?\n/).flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}});
+  const session=provider==='openai'?events.find(e=>e.type==='thread.started')?.thread_id:
+    cli==='antigravity'?events.find(e=>e.event==='result')?.result?.conversation_id??events.find(e=>e.event==='init')?.conversation_id:events[0]?.session_id;
+  const denied=cli==='antigravity'?events.flatMap(e=>e.result?.denied_actions??[]).map(x=>x.action).filter(x=>typeof x==='string'):[];
+  return safe({...(typeof session==='string'&&session?{session_id:session}:{}),...(denied.length?{denied_actions:denied}:{})});
 }
 
 export function parseProtocol(provider,stdout,cli='gemini') {
@@ -89,6 +97,8 @@ export async function invoke(binding,options) {
   const r=await execute(spec.argv,{...spec,cwd:options.cwd,timeoutSeconds:options.timeoutSeconds,signal:options.signal});
   const record=safe({provider:binding.provider,requested_model:binding.model,argv:spec.argv,code:r.code,reason:r.reason,
     started_at:r.started_at,finished_at:r.finished_at,status:failureStatus(r)});
+  Object.assign(record,protocolMetadata(binding.provider,r.stdout,binding.cli??'antigravity'));
+  if(!record.status&&record.denied_actions?.length){record.status='WAITING_CAPABILITY';record.reason='TOOL_PERMISSION_DENIED';}
   if(!record.status){try{Object.assign(record,parseProtocol(binding.provider,r.stdout,binding.cli??'antigravity'));}catch{record.status='BLOCKED_TECHNICAL';record.reason='INVALID_PROTOCOL';}}
   return record;
 }

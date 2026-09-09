@@ -5,7 +5,7 @@ import {writeFile,readFile,mkdir} from 'node:fs/promises';
 import {fixture} from './fixture.mjs';
 import {git,readJson,writeJson,freeze,verify} from '../scripts/lib/workflow.mjs';
 import {execute,subscriptionEnv,failureStatus} from '../scripts/lib/bridge-process.mjs';
-import {parseProtocol,invocation,assertSubscriptionSettings} from '../scripts/lib/bridge-adapters.mjs';
+import {parseProtocol,invocation,assertSubscriptionSettings,protocolMetadata} from '../scripts/lib/bridge-adapters.mjs';
 import {runBridge,acquire} from '../scripts/lib/bridge.mjs';
 
 async function setup(mode='repair') {
@@ -105,6 +105,9 @@ test('Antigravity terminal envelope and billing settings fail closed',()=>{
   for(const status of ['ERROR','WAITING','RUNNING','INTERRUPTED'])assert.throws(()=>parseProtocol('google',JSON.stringify({...event,result:{...event.result,status}}),'antigravity'));
   assert.throws(()=>assertSubscriptionSettings({}));assert.throws(()=>assertSubscriptionSettings({useG1Credits:true}));
   assert.throws(()=>assertSubscriptionSettings({useG1Credits:false,modelProvider:'gemini'}));assertSubscriptionSettings({useG1Credits:false});
+  const denied=JSON.stringify({event:'result',result:{status:'SUCCESS',conversation_id:'saved-even-with-empty-response',response:'',denied_actions:[{action:'read_file',display_name:'ListDir'}]}});
+  assert.deepEqual(protocolMetadata('google',denied,'antigravity'),{session_id:'saved-even-with-empty-response',denied_actions:['read_file']});
+  assert.throws(()=>parseProtocol('google',denied,'antigravity'));
 });
 test('bounded output and cancellation kill real processes',async()=>{
   const overflow=await execute([process.execPath,'-e',"console.log('x'.repeat(5000));setInterval(()=>{},1000)"],{maxBytes:100});
