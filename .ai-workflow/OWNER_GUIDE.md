@@ -11,5 +11,14 @@ chọn lớp A, nhập ghi chú, chuyển lớp B, quay lại A và kiểm tra n
 Bạn quyết định cách ứng dụng hoạt động, đăng nhập khi cần, dùng thử và duyệt merge.
 Bạn không đọc diff, CI, SQL hay lựa chọn model từng lượt.
 Nếu bị kẹt, AI phải báo đang giữ bản nào, vướng gì, và phương án tiếp theo.
-Bản template hiện tại chưa cài cầu nối hai AI. Bước nối CLI thực hiện riêng trên
-Windows; chưa có reviewer thì không báo “đã review”.
+
+Template hiện đã có cầu nối CLI tuần tự cho Windows. Ở chế độ ASSISTED, Lead có thể
+chạy worker → gates → fresh reviewer → repair bằng Codex CLI và Antigravity CLI,
+không cần Owner chuyển từng gói kỹ thuật giữa hai AI. Bridge không tự đăng nhập,
+không tự mua credit và không tự fallback sang API trả phí.
+
+LOCAL_AUTO vẫn tắt mặc định. Chỉ bật sau khi đã có pilot thật đáp ứng điều kiện trong
+CLI_BRIDGE.md, gồm probe account/model hợp lệ, repair/review hoàn chỉnh và một lần
+quota pause → resume an toàn khi tình huống đó xảy ra tự nhiên. Nếu thiếu CLI,
+reviewer, quyền hoặc quota, Lead giữ checkpoint và báo trạng thái chờ; không được
+coi task là đã review hoặc DONE khi bằng chứng cuối chưa hợp lệ.
