@@ -1,5 +1,5 @@
 # QQ AI Workflow v10 — Personal Local
-Version: **10.0.0-rc.1** · Stage: **workflow kit; local CLI bridge not installed**
+Version: **10.0.0-rc.1** · Stage: **sequential CLI bridge; real Windows acceptance required**
 
 Một Codex nhận yêu cầu, tự làm hoặc giao Gemini, kiểm thử, gọi reviewer độc lập,
 sửa lỗi và đưa bản dùng thử cho Owner. Dành cho một người dùng, dự án nhỏ trên
@@ -19,8 +19,9 @@ TASK-11 của mindx-review-bot.
 - Contract yêu cầu/kiểm thử được chốt trước code; evidence gắn đúng commit.
 - Công cụ local: chốt contract, chạy gates có che thông tin nhạy cảm,
   kiểm tra gói kết quả, đề xuất route và báo trạng thái.
-- Bridge chưa triển khai: cấu hình mặc định ASSISTED, không tự spawn CLI,
-  không tự đăng nhập, không tự mua credit, không có scheduler nền.
+- [Cầu nối CLI tuần tự](.ai-workflow/CLI_BRIDGE.md): worker → kiểm thử → reviewer → sửa,
+  có checkpoint và giới hạn sửa. Mặc định ASSISTED; chỉ bật LOCAL_AUTO sau pilot thật.
+  Không tự đăng nhập, không tự mua credit, không có scheduler nền.
 
 Không có reviewer hoặc kết nối thì Lead lưu việc đang chờ; không giả lập review
 thành công và không yêu cầu Owner chuyển từng gói kỹ thuật.
@@ -51,4 +52,5 @@ cách ly quyền Controller/Implementer hoặc kiểm chứng chống sửa gi�
 Xem [giới hạn](.ai-workflow/V10_CANONICAL_SPEC.md).
 
 Route chấp nhận --needs-repair khi xử lý lỗi và --quota-exhausted khi hết hạn mức.
-CLI này đề xuất quyết định; Lead lưu counter thực tế, không có vòng lặp tự chạy.
+CLI `workflow.mjs` đề xuất quyết định. `bridge.mjs` thực thi vòng tuần tự riêng,
+lưu counter thực tế và dừng khi kết quả thao tác chưa rõ.

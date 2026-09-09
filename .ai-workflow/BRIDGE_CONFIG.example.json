@@ -1,0 +1,11 @@
+{
+  "schema_version": "qq.bridge.v1",
+  "billing": "SUBSCRIPTION_ONLY",
+  "mode": "ASSISTED",
+  "timeout_seconds": 300,
+  "write_paths": ["src/example.mjs"],
+  "gate_paths": ["test", "scripts/check-kit.mjs"],
+  "worker": {"provider": "google", "cli": "antigravity", "command": ["agy"], "model": "REPLACE_WITH_PROBED_MODEL"},
+  "reviewer": {"provider": "openai", "command": ["codex"], "model": "REPLACE_WITH_PROBED_MODEL"},
+  "senior": {"provider": "openai", "command": ["codex"], "model": "REPLACE_WITH_PROBED_MODEL"}
+}
