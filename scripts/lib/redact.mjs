@@ -30,7 +30,7 @@ export function redactText(input, env = process.env) {
     [/\b(?:proxy-authorization|authorization)\s*:[^\r\n]*/gi, "[REDACTED_AUTHORIZATION_HEADER]"],
     [/("[^"]*(?:password|passwd|secret|token|cookie|api[_-]?key|private[_-]?key)[^"]*"\s*:\s*)"(?:\\.|[^"\\])*"/gi, '$1"[REDACTED]"'],
     [/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [REDACTED]"],
-    [/(?:ghp_|github_pat_|sk-|xox[baprs]-)[A-Za-z0-9_-]{8,}/gi, "[REDACTED_TOKEN]"],
+    [/\b(?:ghp_|github_pat_|sk-|xox[baprs]-)[A-Za-z0-9_-]{8,}/gi, "[REDACTED_TOKEN]"],
     [/\b[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\b/g, "[REDACTED_JWT]"],
     [/(https?:\/\/)([^\s:@/]+):([^\s@/]+)@/gi, "$1[REDACTED_CREDENTIALS]@"],
     [/\b(password|passwd|secret|token|cookie|api[_-]?key|private[_-]?key)\s*([=:])\s*([^\s,;]+)/gi, "$1$2[REDACTED]"],

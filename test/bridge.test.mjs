@@ -5,6 +5,7 @@ import {writeFile,readFile,mkdir} from 'node:fs/promises';
 import {fixture} from './fixture.mjs';
 import {git,readJson,writeJson,freeze,verify} from '../scripts/lib/workflow.mjs';
 import {execute,subscriptionEnv,failureStatus} from '../scripts/lib/bridge-process.mjs';
+import {redactText} from '../scripts/lib/redact.mjs';
 import {parseProtocol,invocation,assertSubscriptionSettings,protocolMetadata} from '../scripts/lib/bridge-adapters.mjs';
 import {runBridge,acquire,reviewSource} from '../scripts/lib/bridge.mjs';
 
@@ -86,6 +87,10 @@ test('protocol requires session, completion and valid result; requested model is
   const parsed=parseProtocol('google',JSON.stringify({session_id:'session',response:JSON.stringify(body),stats:{models:{'actual-model':{}}}}));
   assert.deepEqual(parsed.observed_models,['actual-model']);
   assert.equal(failureStatus({code:0,stdout:'quota issue discussed',stderr:''}),null);
+});
+test('redaction preserves long TASK identifiers while hiding standalone credential prefixes',()=>{
+  assert.equal(redactText('TASK-LIVE-PILOT-5'),'TASK-LIVE-PILOT-5');
+  assert.equal(redactText('value: sk-synthetic123456789'),'value: [REDACTED_TOKEN]');
 });
 test('subscription environment and adapters prevent API fallback and preserve argv boundaries',async()=>{
   const env=subscriptionEnv({Path:'ok',OPENAI_API_KEY:'dummy',GOOGLE_APPLICATION_CREDENTIALS:'dummy',GEMINI_API_KEY:'dummy',GEMINI_CLI_SYSTEM_SETTINGS_PATH:'override',CODEX_HOME:'override',TEST_SECRET:'dummy'});
