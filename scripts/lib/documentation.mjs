@@ -3,6 +3,7 @@ export const ENTRY_POINT_FILES = ["AGENTS.md", "GEMINI.md"];
 export const REFERENCE_GUIDANCE_FILES = [
   "AGENTS.md",
   "GEMINI.md",
+  "README.md",
   ".ai-workflow/POLICY.md",
   ".ai-workflow/BOOTSTRAP.md",
   ".ai-workflow/ACTOR_REGISTRY.md",
@@ -11,6 +12,9 @@ export const REFERENCE_GUIDANCE_FILES = [
   ".ai-workflow/OWNER_STATUS.md",
   ".ai-workflow/HANDOFF_FILES.md",
   ".ai-workflow/DATA_MODEL.md",
+  ".ai-workflow/CLI_BRIDGE.md",
+  ".ai-workflow/FAST_LANE.md",
+  ".ai-workflow/MIGRATION.md",
   ".ai-workflow/OWNER_GUIDE.md",
   ".ai-workflow/prompts/LEAD_BOOTSTRAP.md",
   ".ai-workflow/prompts/IMPLEMENTER_BOOTSTRAP.md",

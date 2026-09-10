@@ -68,6 +68,18 @@ Fresh-context review is organizational independence, not OS-level isolation.
 The packet checker cannot prove a human/model identity, detect fabricated JSON,
 or enforce all transitions. Lead must retain genuine execution/review records.
 
+## Machine Fast Lane
+Fast Lane only routes a clean documentation-only candidate; it never replaces the
+Feature flow. The accepted base commit supplies the allowlist and classifier. The
+allowlist contains only `docs/user-guide/**/*.md` and `docs/tutorials/**/*.md`.
+Any changed allowlist, classifier, fixture, `AGENTS.md`, `GEMINI.md`, binary file,
+symlink, executable-mode change or other path goes to Feature flow. A rename checks
+both its old and new paths. Comment-only recognition is not supported.
+Each decision binds the base and head plus hashes of the accepted allowlist and
+classifier. Changed base, head or decision, unavailable accepted base, or an unclean
+checkout invalidates the decision and routes to Feature flow. A candidate cannot
+relax its own controls and receive Fast Lane.
+
 ## Safety and operational boundaries
 Keep credentials in official account stores; never copy them into task files.
 Run gates only from a trusted local project. Tools are not a sandbox.
@@ -85,4 +97,9 @@ The sequential CLI bridge can run explicit supervised pilots while ASSISTED.
 LOCAL_AUTO requires installation, actual account/model probes and a successful
 handoff/repair/quota pilot on Windows. Merely editing a config field is insufficient.
 Activation evidence binds the tested bridge source, account bindings and pilot state.
+The accepted pilot uses both actual subscription providers, a fresh review, a
+reviewer-or-gate repair, final evidence, and a naturally observed preflight quota
+pause followed by safe resume. Do not deliberately exhaust a subscription to create
+this record. The CLI bridge documents commands and persisted checkpoints; it does not
+change these activation conditions.
 See [CLI operations](CLI_BRIDGE.md) for commands and conservative interruption recovery.

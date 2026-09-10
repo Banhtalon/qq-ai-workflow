@@ -1,5 +1,5 @@
 # QQ AI Workflow v10 — Personal Local
-Version: **10.0.0-rc.1** · Stage: **sequential CLI bridge; real Windows acceptance required**
+Version: **10.0.0-rc.1** · Stage: **sequential CLI bridge; awaiting real Windows acceptance**
 
 Một Codex nhận yêu cầu, tự làm hoặc giao Gemini, kiểm thử, gọi reviewer độc lập,
 sửa lỗi và đưa bản dùng thử cho Owner. Dành cho một người dùng, dự án nhỏ trên
