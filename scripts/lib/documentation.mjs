@@ -10,6 +10,7 @@ export const REFERENCE_GUIDANCE_FILES = [
   ".ai-workflow/STATE_MACHINE.md",
   ".ai-workflow/OWNER_STATUS.md",
   ".ai-workflow/HANDOFF_FILES.md",
+  ".ai-workflow/DATA_MODEL.md",
   ".ai-workflow/OWNER_GUIDE.md",
   ".ai-workflow/prompts/LEAD_BOOTSTRAP.md",
   ".ai-workflow/prompts/IMPLEMENTER_BOOTSTRAP.md",

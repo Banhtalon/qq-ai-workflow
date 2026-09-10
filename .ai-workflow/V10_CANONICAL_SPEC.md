@@ -63,6 +63,7 @@ Contract digest detects accidental edits; it is not a secure external authority 
 Verification records base/head/hash, actual argv, exit codes, timeouts and redacted
 output. A process exit 0 alone is not product acceptance. Review and Owner acceptance
 bind to the same head/hash. A later edit invalidates them.
+An elevated-risk review records completed risk checks and their result in its summary.
 Fresh-context review is organizational independence, not OS-level isolation.
 The packet checker cannot prove a human/model identity, detect fabricated JSON,
 or enforce all transitions. Lead must retain genuine execution/review records.

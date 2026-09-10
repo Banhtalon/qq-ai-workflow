@@ -1,7 +1,8 @@
 # Sequential Windows CLI bridge
 
-This is the PR 1 bridge, governed by [the canonical spec](V10_CANONICAL_SPEC.md).
-It has no scheduler, dashboard, API billing fallback or parallel writers.
+This is the PR 1 bridge. [The canonical spec](V10_CANONICAL_SPEC.md) defines workflow
+roles, state and repair limits; this page describes CLI invocation and recovery behavior.
+It has no scheduler or dashboard.
 The existing `workflow.mjs route` remains an ASSISTED proposal tool. The bridge
 uses a separate [configuration](BRIDGE_CONFIG.example.json); profile examples
 are not account verification or automatic-mode activation.
@@ -74,17 +75,18 @@ gates, then invokes a fresh Codex reviewer with read-only permissions. Antigravi
 is worker-only: its `plan` mode is a prompt convention, not a write prohibition.
 Capability probes use a no-tools prompt and clean-tree checking.
 The reviewer
-receives actual evidence and base/head/contract; it never shares a worker session.
+receives actual evidence and base/head/contract; reviewer independence is defined by
+the canonical spec.
 Lead extracts the diff, full changed source and declared gate sources directly from
 Git at the candidate head into the review prompt (bounded to 256 KiB, refusing
 binary/secret-like content). This lets the fresh reviewer inspect source even when
 nested Windows shell tools are unavailable. Reviewer uses this packet without tools
 and must report missing context instead of assuming dependencies are correct. The
 execution record binds the source packet digest; stale/dirty candidates are refused.
-Findings are automatically passed to the next worker. Two repair rounds at the
-initial tier are followed by at most one senior pass. Counters survive pause/resume.
-Any remaining material failure is `BLOCKED_TECHNICAL`. Readiness uses existing
-exact-head evidence/review validation and does not authorize merge.
+Findings are passed to the next worker. Repair budgeting and counter persistence follow
+the [canonical spec](V10_CANONICAL_SPEC.md#routing-and-budgets); checkpoints retain the
+current counter values. Readiness uses existing exact-head evidence/review validation and
+does not authorize merge.
 
 Every operation has an atomic, flushed in-flight checkpoint before invocation.
 Records contain actual argv, process times/exit, session ID, requested/reported
@@ -92,8 +94,8 @@ models, head and parsed result. Raw provider transcripts are bounded in memory a
 not persisted by the bridge. Selected persisted text is redacted. Official CLIs
 may retain their own local sessions under their normal account policies.
 
-Quota during read-only capability probes gives `WAITING_QUOTA`; `resume` probes
-again without resetting counters. No purchase/reset/API fallback is attempted.
+During a quota pause, `resume` probes again without changing the checkpoint counters.
+The child environment excludes API credentials and provider overrides.
 After a worker/reviewer failure, invalid output, timeout or interruption, effects
 may be uncertain. The bridge preserves code and the in-flight marker and refuses
 automatic replay. The Lead inspects processes, diff, packet integrity and the saved

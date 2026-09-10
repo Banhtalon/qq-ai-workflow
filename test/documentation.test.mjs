@@ -28,3 +28,11 @@ test("rule-language detector warns about a guide that appears to add policy",()=
   ["must","never","required","không được"]
  );
 });
+
+test("canonical spec owns elevated review and repair-budget rules",()=>{
+ const canonical=readFileSync(join(workspace,".ai-workflow/V10_CANONICAL_SPEC.md"),"utf8");
+ const bridge=readFileSync(join(workspace,".ai-workflow/CLI_BRIDGE.md"),"utf8");
+ assert.match(canonical,/An elevated-risk review records completed risk checks/u);
+ assert.match(canonical,/Two repair rounds at the initial tier/u);
+ assert.doesNotMatch(bridge,/Two repair rounds at the initial tier/u);
+});
