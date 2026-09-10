@@ -51,6 +51,7 @@ export function validateTask(t){
     required(x?.policy==='GEMINI_FIRST_V1'&&typeof x.prepared==='boolean'&&typeof x.local_synthetic==='boolean'&&text(x.rationale),'invalid execution contract');
     required(Array.isArray(x.design_sessions)&&x.design_sessions.every(text),'invalid design sessions');
     required(typeof x.browser_required==='boolean','invalid browser requirement');
+    if(x.source_approvals_sha256!==undefined)required(/^[a-f0-9]{64}$/.test(x.source_approvals_sha256),'invalid source approvals digest');
   }
   return t;
 }

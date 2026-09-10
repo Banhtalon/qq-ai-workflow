@@ -98,6 +98,18 @@ Usage records retain provider-reported counters or null when unavailable; API pr
 does not establish subscription quota. Full redacted gate evidence remains available.
 The packet checker cannot prove a human/model identity, detect fabricated JSON,
 or enforce all transitions. Lead must retain genuine execution/review records.
+For source inspection, Lead may predeclare exact test-file paths and SHA-256
+content approvals for personally inspected synthetic test data in bridge config.
+Their JSON digest is frozen as execution.source_approvals_sha256 in the task and
+checked against the config before work. The checkpoint also binds configuration;
+changed bytes
+invalidate them. No directory-wide secret exemption is supported. Recognizable
+credential formats and current secret environment values remain blocked even with
+an approval. Runtime output and argument redaction remain unchanged.
+Review packets persist the exact inspected source, base/head content hashes,
+declared context and gate sources alongside the source digest. Missing required
+source context or oversized packets stop review. Technical review may pass before
+browser evidence exists; that absence alone is a readiness wait, not a code defect.
 
 ## Machine Fast Lane
 Fast Lane only routes a clean documentation-only candidate; it never replaces the

@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import {writeFile,readFile,mkdir,unlink} from 'node:fs/promises';
 import {fixture} from './fixture.mjs';
 import {git,readJson,writeJson,freeze,verify} from '../scripts/lib/workflow.mjs';
 import {execute,subscriptionEnv,failureStatus} from '../scripts/lib/bridge-process.mjs';
 import {redactText} from '../scripts/lib/redact.mjs';
 import {parseProtocol,invocation,assertSubscriptionSettings,protocolMetadata} from '../scripts/lib/bridge-adapters.mjs';
-import {runBridge,acquire,reviewSource,quotaDrill,activate} from '../scripts/lib/bridge.mjs';
+import {runBridge,acquire,reviewSource,quotaDrill,activate,sourceAllowed,validateConfig} from '../scripts/lib/bridge.mjs';
 
 async function setup(mode='repair') {
   const f=await fixture();git(f.repo,'switch','-c','feature');
@@ -48,7 +49,67 @@ test('real subprocess worker -> gates -> independent review -> repair -> final r
     assert.equal(r.head,git(f.repo,'rev-parse','HEAD').trim());
     assert.equal(await readFile(path.join(f.repo,'feature.txt'),'utf8'),'repaired\n');
     assert.equal((await f.run({resume:true})).status,'READY_FOR_OWNER');
+    const call=s.history.findLast(h=>h.phase==='reviewer');
+    const packetDirs=await (await import('node:fs/promises')).readdir(f.packetDir,{withFileTypes:true});
+    const snapshots=[];for(const d of packetDirs.filter(d=>d.isDirectory())){try{snapshots.push(await readJson(path.join(f.packetDir,d.name,'review-source.json')));}catch(e){if(e.code!=='ENOENT')throw e;}}
+    assert.ok(snapshots.some(p=>createHash('sha256').update(JSON.stringify(p)).digest('hex')===call.source_sha256));
   }finally{await f.cleanup();}
+});
+
+test('exact inspected test approval is byte scoped and never allows recognizable credentials',async()=>{
+ const f=await setup('pass');try{
+  const name='notes/tests.py',content="password='dummy-local-example'\n";
+  const approval={path:name,sha256:createHash('sha256').update(content).digest('hex'),kind:'synthetic-test-data',reason:'Lead inspected synthetic test value'};
+  const config={...f.config,synthetic_source_approvals:[approval]};validateConfig(config);
+  assert.equal(sourceAllowed(name,content,config,{}),true);
+  assert.equal(sourceAllowed(name,content+'# changed\n',config,{}),false);
+  assert.equal(sourceAllowed(name,content.replaceAll('\n','\r\n'),config,{}),false);
+  assert.equal(sourceAllowed(name,content+'\ufffd',config,{}),false);
+  assert.equal(sourceAllowed('notes/views.py',content,config,{}),false);
+  assert.equal(sourceAllowed(name,content,config,{EXAMPLE_PASSWORD:'dummy-local-example'}),false);
+  for(const raw of ['password=ghp_'+'a'.repeat(24),'Bearer '+'z'.repeat(20),'-----BEGIN PRIVATE KEY-----']){
+   const c={...config,synthetic_source_approvals:[{...approval,sha256:createHash('sha256').update(raw).digest('hex')}]};
+   assert.equal(sourceAllowed(name,raw,c,{}),false);
+  }
+  assert.throws(()=>validateConfig({...config,synthetic_source_approvals:[approval,approval]}),/duplicate/);
+  assert.throws(()=>validateConfig({...config,synthetic_source_approvals:[{...approval,path:'notes/*.py'}]}),/invalid/);
+  assert.throws(()=>validateConfig({...config,review_context_paths:[':(glob)**']}),/invalid/);
+ }finally{await f.cleanup();}
+});
+
+test('direct gate scripts are included and missing scripts stop the review packet',async()=>{
+ const f=await setup('pass');try{
+  await writeFile(path.join(f.repo,'check.mjs'),'// gate context\n');git(f.repo,'add','.');git(f.repo,'commit','-m','gate');
+  const t={...f.task,candidate_head:git(f.repo,'rev-parse','HEAD').trim(),gates:[{id:'direct',argv:[process.execPath,'check.mjs'],timeout_seconds:2}]};
+  assert.ok(reviewSource(f.repo,t,f.config).files.some(p=>p.path==='check.mjs'));
+  t.gates[0].argv[1]='missing.mjs';assert.throws(()=>reviewSource(f.repo,t,f.config),/missing/);
+ }finally{await f.cleanup();}
+});
+
+test('review packet checks both Git versions, includes declared context and rejects missing or stale approvals',async()=>{
+ const f=await setup('pass');try{
+  const name='notes/tests.py',old="password='dummy-local-before'\n",next="password='dummy-local-after'\n";
+  await mkdir(path.join(f.repo,'notes'));await writeFile(path.join(f.repo,name),old);await writeFile(path.join(f.repo,'notes/context.py'),'# trusted context\n');
+  git(f.repo,'add','.');git(f.repo,'commit','-m','baseline');const base=git(f.repo,'rev-parse','HEAD').trim();
+  await writeFile(path.join(f.repo,name),next);git(f.repo,'add','.');git(f.repo,'commit','-m','change');
+  const t={...f.task,base_sha:base,candidate_head:git(f.repo,'rev-parse','HEAD').trim()};
+  const approve=content=>({path:name,sha256:createHash('sha256').update(content).digest('hex'),kind:'synthetic-test-data',reason:'Inspected dummy local test'});
+  const config={...f.config,review_context_paths:['notes/context.py'],synthetic_source_approvals:[approve(next)]};
+  t.execution={source_approvals_sha256:createHash('sha256').update(JSON.stringify(config.synthetic_source_approvals)).digest('hex')};
+  assert.throws(()=>reviewSource(f.repo,t,config),/secret-like/);
+  config.synthetic_source_approvals.push(approve(old));
+  assert.throws(()=>reviewSource(f.repo,t,config),/frozen task/);
+  t.execution.source_approvals_sha256=createHash('sha256').update(JSON.stringify(config.synthetic_source_approvals)).digest('hex');const packet=reviewSource(f.repo,t,config);
+  assert.equal(packet.files.find(x=>x.path===name).content,next);assert.ok(packet.diff.includes(old.trim()));
+  assert.equal(packet.baseline.find(x=>x.path==='notes/context.py').unchanged,true);
+  assert.equal(packet.baseline.find(x=>x.path===name).unchanged,false);
+  assert.equal(packet.base_files.find(x=>x.path===name).content,old);
+  assert.equal(packet.contract_sha256,t.contract_sha256);
+  assert.throws(()=>reviewSource(f.repo,t,{...config,review_context_paths:['missing.py']}),/missing/);
+  await unlink(path.join(f.repo,name));git(f.repo,'add','.');git(f.repo,'commit','-m','delete');t.candidate_head=git(f.repo,'rev-parse','HEAD').trim();
+  const noApprovalTask={...t,execution:undefined};
+  assert.throws(()=>reviewSource(f.repo,noApprovalTask,{...config,synthetic_source_approvals:[]}),/secret-like/);
+ }finally{await f.cleanup();}
 });
 
 test('Gemini-first elevated bridge uses worker and elevated reviewer; browser wait resumes without another model call',async()=>{
@@ -59,6 +120,7 @@ test('Gemini-first elevated bridge uses worker and elevated reviewer; browser wa
   const config={...f.config,elevated_reviewer:{...f.config.reviewer,model:'elevated-fixture'}};
   const run=()=>runBridge({cwd:f.repo,taskPath,config,packetDir:f.packetDir,pilot:true});
   const s=await run();assert.equal(s.status,'WAITING_CAPABILITY');assert.equal(s.repair_rounds,0);
+  assert.match(await readFile(path.join(f.dir,'review-input.txt'),'utf8'),/Missing browser observations alone are not a code finding/);
   assert.deepEqual(s.history.filter(h=>h.session_id).map(h=>h.tier),['worker','elevated_reviewer']);
   const pending=await runBridge({cwd:f.repo,taskPath,config,packetDir:f.packetDir,pilot:true,resume:true});
   assert.equal(pending.history.length,s.history.length);
