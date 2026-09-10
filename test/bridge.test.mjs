@@ -10,6 +10,8 @@ import {redactText} from '../scripts/lib/redact.mjs';
 import {parseProtocol,invocation,assertSubscriptionSettings,protocolMetadata} from '../scripts/lib/bridge-adapters.mjs';
 import {runBridge,acquire,reviewSource,quotaDrill,activate,sourceAllowed,validateConfig,loadReviewSource,configHash} from '../scripts/lib/bridge.mjs';
 
+const windowsOnly={skip:process.platform==='win32'?false:'requires a real Windows runtime'};
+
 async function setup(mode='repair') {
   const f=await fixture();git(f.repo,'switch','-c','feature');
   const cli=path.join(f.dir,'fake.mjs');
@@ -96,7 +98,8 @@ test('cached bridge readiness and activation reject missing or changed persisted
   assert.equal(readiness(t,e,r,{sourceSnapshot:await loadReviewSource(f.packetDir,r),sourceConfigHash:configHash(f.config)}).status,'NEEDS_FIX');
   await unlink(file);assert.equal(await loadReviewSource(f.packetDir,r),null);
   const sp=path.join(f.packetDir,'state.json'),s=await readJson(sp);s.history.find(h=>h.phase==='worker').provider='google';await writeJson(sp,s);
-  await assert.rejects(quotaDrill(f.config,f.packetDir,path.join(f.dir,'activation')),/evidence\/review/);
+  await assert.rejects(quotaDrill(f.config,f.packetDir,path.join(f.dir,'activation')),
+    process.platform==='win32'?/evidence\/review/:/real Windows pilot required/);
   const resumed=await f.run({resume:true});assert.equal(resumed.status,'NEEDS_FIX');assert.match(resumed.error,/source/);
   await writeFile(file,original);assert.equal((await f.run({resume:true})).status,'READY_FOR_OWNER');
  }finally{await f.cleanup();}
@@ -187,7 +190,7 @@ test('material review discovered after entering gate recovery is repaired before
  }finally{await f.cleanup();}
 });
 
-test('activation paths reject restored old pilot packets even without checking pilot checkout',async()=>{
+test('activation paths reject restored old pilot packets even without checking pilot checkout',windowsOnly,async()=>{
  const f=await setup('pass');try{
   await f.run();const oldTask=await readJson(f.taskPath),ep=path.join(f.packetDir,'evidence.json'),rp=path.join(f.packetDir,'review.json');
   const oldEvidence=await readJson(ep),oldReview=await readJson(rp);
@@ -302,7 +305,7 @@ test('default mode cannot execute automatic work or accept fake profile toggle',
     f.config.mode='LOCAL_AUTO';await assert.rejects(f.run({pilot:false}),/ENOENT/);
   }finally{await f.cleanup();}
 });
-test('quota drill binds a completed Windows pilot without calling provider CLIs',async()=>{
+test('quota drill binds a completed Windows pilot without calling provider CLIs',windowsOnly,async()=>{
   const f=await setup();try{
     const state=await f.run();assert.equal(state.status,'READY_FOR_OWNER');
     const statePath=path.join(f.packetDir,'state.json'),stored=await readJson(statePath);
@@ -321,7 +324,7 @@ test('quota drill binds a completed Windows pilot without calling provider CLIs'
     f.config.mode='LOCAL_AUTO';await assert.rejects(runBridge({cwd:f.repo,taskPath:f.taskPath,config:f.config,packetDir:activationDir,pilot:false}),/quota drill receipt/);
   }finally{await f.cleanup();}
 });
-test('LOCAL_AUTO resume stays valid after its first task advances the pilot checkout',async()=>{
+test('LOCAL_AUTO resume stays valid after its first task advances the pilot checkout',windowsOnly,async()=>{
   const f=await setup();try{
     const pilot=await f.run(),statePath=path.join(f.packetDir,'state.json');assert.equal(pilot.status,'READY_FOR_OWNER');
     const stored=await readJson(statePath);stored.history.find(h=>h.phase==='worker').provider='google';stored.capability_history[0].reports.find(r=>r.role==='worker').provider='google';await writeJson(statePath,stored);
