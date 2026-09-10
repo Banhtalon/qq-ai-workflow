@@ -86,11 +86,12 @@ export function parseProtocol(provider,stdout,cli='gemini',{capabilityProbe=fals
     const results=events.filter(e=>e.event==='result');
     if(results.length!==1||results[0].result?.status!=='SUCCESS')throw Error('incomplete Antigravity protocol');
     const response=results[0].result;session=response.conversation_id;
+    usage=response.usage??response.stats??null;
     models=[...new Set(events.flatMap(e=>e.init?.model?[e.init.model]:[]))];
     body=response.structured_output?JSON.stringify(response.structured_output):response.response;
   } else {
     const response=JSON.parse(stdout);if(response.error)throw Error('Gemini protocol error');
-    session=response.session_id;models=Object.keys(response.stats?.models??{});body=response.response;
+    session=response.session_id;models=Object.keys(response.stats?.models??{});body=response.response;usage=response.usage??response.stats??null;
   }
   if(typeof session!=='string'||!session.trim()||typeof body!=='string')throw Error('missing session or structured response');
   const result=JSON.parse(body.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, ''));

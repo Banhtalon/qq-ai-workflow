@@ -165,7 +165,14 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
       required(state.cwd===cwd&&state.task_path===taskPath&&state.contract_sha256===t.contract_sha256&&state.config_hash===configHash(config)&&state.bridge_hash===await bridgeHash(),'checkpoint/config mismatch');
       required(!state.in_flight&&!state.reconciliation_required,'unknown operation: Lead reconciliation required; never replay automatically');
       required(state.head===cp.head&&state.branch===cp.branch,'checkpoint candidate changed');
-      if(['DONE','READY_FOR_OWNER','BLOCKED_TECHNICAL'].includes(state.status))return state;
+      if(state.status==='BLOCKED_TECHNICAL')return state;
+      if(['DONE','READY_FOR_OWNER'].includes(state.status)){
+        const optional=async file=>{try{return await readJson(file);}catch(e){if(e.code==='ENOENT')return null;throw e;}};
+        const ready=readiness(t,await optional(path.join(packetDir,'evidence.json')),await optional(path.join(packetDir,'review.json')));
+        state.status=ready.status;state.error=ready.reason??null;
+        if(ready.status==='NEEDS_FIX')state.phase='gates';
+        await save();return state;
+      }
     } else {
       try{await readFile(statePath);throw Error('checkpoint already exists; use resume, not a new budget');}catch(e){if(e.code!=='ENOENT')throw e;}
       required(t.repair_rounds===0&&t.senior_passes===0,'existing task counters require an existing checkpoint');

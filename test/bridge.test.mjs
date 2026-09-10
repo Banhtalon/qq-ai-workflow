@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import {writeFile,readFile,mkdir} from 'node:fs/promises';
+import {writeFile,readFile,mkdir,unlink} from 'node:fs/promises';
 import {fixture} from './fixture.mjs';
 import {git,readJson,writeJson,freeze,verify} from '../scripts/lib/workflow.mjs';
 import {execute,subscriptionEnv,failureStatus} from '../scripts/lib/bridge-process.mjs';
@@ -64,7 +64,28 @@ test('Gemini-first elevated bridge uses worker and elevated reviewer; browser wa
   const updated=await readJson(taskPath);updated.ui_evidence={head:updated.candidate_head,contract_sha256:updated.contract_sha256,url:'http://localhost:3000',status:'PASS',checks:[{action:'Open',observed:'Expected page',passed:true}]};await writeJson(taskPath,updated);
   const final=await runBridge({cwd:f.repo,taskPath,config,packetDir:f.packetDir,pilot:true,resume:true});
   assert.equal(final.status,'READY_FOR_OWNER');assert.equal(final.history.length,s.history.length);
+  const current=await readJson(taskPath);current.ui_evidence.head='0'.repeat(40);await writeJson(taskPath,current);
+  const invalid=await runBridge({cwd:f.repo,taskPath,config,packetDir:f.packetDir,pilot:true,resume:true});assert.equal(invalid.status,'WAITING_CAPABILITY');
  }finally{await f.cleanup();}
+});
+
+test('cached readiness is invalidated when independent review is removed',async()=>{
+ const f=await setup('pass');try{
+  assert.equal((await f.run()).status,'READY_FOR_OWNER');
+  await unlink(path.join(f.packetDir,'review.json'));
+  assert.equal((await f.run({resume:true})).status,'WAITING_CAPABILITY');
+  assert.equal((await f.run({resume:true})).status,'READY_FOR_OWNER');
+ }finally{await f.cleanup();}
+});
+
+test('Google protocol retains reported usage and distinguishes absent counters',()=>{
+ const result={verdict:'PASS',summary:'fixture',material_findings:[],risk_checks_completed:false};
+ const stats={models:{'flash-fixture':{tokens:{prompt:12,candidates:4}}}};
+ const response={session_id:'fixture-session',response:JSON.stringify(result),stats};
+ assert.deepEqual(parseProtocol('google',JSON.stringify(response),'gemini').usage,stats);
+ delete response.stats;assert.equal(parseProtocol('google',JSON.stringify(response),'gemini').usage,null);
+ const envelope={event:'result',result:{status:'SUCCESS',conversation_id:'fixture-session',structured_output:result,usage:{input_tokens:12,output_tokens:4}}};
+ assert.deepEqual(parseProtocol('google',JSON.stringify(envelope),'antigravity').usage,envelope.result.usage);
 });
 
 test('missing elevated reviewer stops before any writer call',async()=>{
