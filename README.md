@@ -1,5 +1,5 @@
 # QQ AI Workflow v10 — Personal Local
-Version: **10.0.0-rc.1** · Stage: **sequential CLI bridge; real Windows acceptance required**
+Version: **10.0.0-rc.1** · Stage: **sequential CLI bridge; awaiting real Windows acceptance**
 
 Một Codex nhận yêu cầu, tự làm hoặc giao Gemini, kiểm thử, gọi reviewer độc lập,
 sửa lỗi và đưa bản dùng thử cho Owner. Dành cho một người dùng, dự án nhỏ trên
@@ -47,11 +47,19 @@ node scripts/workflow.mjs status <task.json> <evidence.json> <review.json> <repo
 Các file task/evidence đặt trong .workflow-local/ đã gitignore; profile example là
 mẫu, không chứng minh tài khoản đã sẵn sàng.
 
-## Lưu trữ
-[legacy/v9.1.2](legacy/v9.1.2/README.md) giữ nguyên bộ v9 để đối chiếu/rollback.
-Không đọc luật legacy như chỉ dẫn đang hoạt động. Bộ v10 không cung cấp mức
-cách ly quyền Controller/Implementer hoặc kiểm chứng chống sửa giả của v9.
-Xem [giới hạn](.ai-workflow/V10_CANONICAL_SPEC.md).
+## Khôi phục v9
+
+Tag chú thích `v9.1.2` giữ bản v9 tại commit
+`c68750f80d276534867287ffe02689f346be8b8d`. Để xem hoặc phục hồi mà không
+ghi đè checkout hiện tại, tạo thư mục làm việc riêng:
+
+```text
+git worktree add ..\qq-ai-workflow-v9 v9.1.2
+```
+
+Xem [hướng dẫn khôi phục](.ai-workflow/MIGRATION.md#khôi-phục-v9). Bộ v10 không
+cung cấp mức cách ly quyền Controller/Implementer hoặc kiểm chứng chống sửa giả
+của v9. Xem [giới hạn](.ai-workflow/V10_CANONICAL_SPEC.md).
 
 Route chấp nhận --needs-repair khi xử lý lỗi và --quota-exhausted khi hết hạn mức.
 CLI `workflow.mjs` đề xuất quyết định. `bridge.mjs` thực thi vòng tuần tự riêng,

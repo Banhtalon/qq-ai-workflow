@@ -11,6 +11,13 @@ Any contract change starts a new revision, records why, invalidates evidence/rev
 never silently weaken gates. A task uses one workflow version throughout a revision.
 Legacy v9 rules apply only to explicitly unconverted host tasks.
 
+## Document hierarchy
+This specification is the sole source of workflow rules. Supporting documents may
+describe commands, file formats, recovery steps or Owner-facing examples, but cannot
+add, remove or reinterpret workflow rules. When a supporting guide appears to add a
+rule, the documentation checker reports it as an advisory; revise this specification
+in a new task revision before treating that guidance as a rule.
+
 ## Responsibilities
 Owner: describe behavior, decide product tradeoffs, account-only actions,
 functional acceptance, final merge approval. No code, logs, SQL or CI judgment.
@@ -56,9 +63,22 @@ Contract digest detects accidental edits; it is not a secure external authority 
 Verification records base/head/hash, actual argv, exit codes, timeouts and redacted
 output. A process exit 0 alone is not product acceptance. Review and Owner acceptance
 bind to the same head/hash. A later edit invalidates them.
+An elevated-risk review records completed risk checks and their result in its summary.
 Fresh-context review is organizational independence, not OS-level isolation.
 The packet checker cannot prove a human/model identity, detect fabricated JSON,
 or enforce all transitions. Lead must retain genuine execution/review records.
+
+## Machine Fast Lane
+Fast Lane only routes a clean documentation-only candidate; it never replaces the
+Feature flow. The accepted base commit supplies the allowlist and classifier. The
+allowlist contains only `docs/user-guide/**/*.md` and `docs/tutorials/**/*.md`.
+Any changed allowlist, classifier, fixture, `AGENTS.md`, `GEMINI.md`, binary file,
+symlink, executable-mode change or other path goes to Feature flow. A rename checks
+both its old and new paths. Comment-only recognition is not supported.
+Each decision binds the base and head plus hashes of the accepted allowlist and
+classifier. Changed base, head or decision, unavailable accepted base, or an unclean
+checkout invalidates the decision and routes to Feature flow. A candidate cannot
+relax its own controls and receive Fast Lane.
 
 ## Safety and operational boundaries
 Keep credentials in official account stores; never copy them into task files.
@@ -77,4 +97,9 @@ The sequential CLI bridge can run explicit supervised pilots while ASSISTED.
 LOCAL_AUTO requires installation, actual account/model probes and a successful
 handoff/repair/quota pilot on Windows. Merely editing a config field is insufficient.
 Activation evidence binds the tested bridge source, account bindings and pilot state.
+The accepted pilot uses both actual subscription providers, a fresh review, a
+reviewer-or-gate repair, final evidence, and a naturally observed preflight quota
+pause followed by safe resume. Do not deliberately exhaust a subscription to create
+this record. The CLI bridge documents commands and persisted checkpoints; it does not
+change these activation conditions.
 See [CLI operations](CLI_BRIDGE.md) for commands and conservative interruption recovery.
