@@ -26,6 +26,12 @@ export function validateConfig(c) {
 }
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
 const configHash=c=>hash({...c,mode:'ASSISTED'});
+const materialAtHead=(t,r,head)=>r?.head===head&&r.contract_sha256===t.contract_sha256&&Array.isArray(r.material_findings)&&r.material_findings.length>0;
+function retainMaterial(state,t,review,cwd){
+  if(!materialAtHead(t,review,state.head))return false;
+  state.unresolved_review={head:state.head,tree:git(cwd,'rev-parse','HEAD^{tree}').trim(),review};
+  state.feedback=review;return true;
+}
 function boundReadiness(t,e,r,config){
   return readiness(t,e,r,{reviewerBinding:config[executionRoute(t).reviewer]});
 }
@@ -67,7 +73,9 @@ async function acceptedPilot(config,pilotDir,{requirePilotCheckout=true}={}) {
   required(s.repair_rounds>=1,'live reviewer-to-worker repair required');
   const calls=s.history.filter(h=>['worker','reviewer'].includes(h.phase)&&!h.status&&h.session_id);
   required(new Set(calls.map(c=>c.provider)).size===2,'both real subscription providers required');
-  const t=await readJson(s.task_path);await assertContract(s.task_path,t);if(requirePilotCheckout)cleanHead(s.cwd,s.head);
+  const t=await readJson(s.task_path);await assertContract(s.task_path,t);
+  required(t.candidate_head===s.head&&t.contract_sha256===s.contract_sha256,'pilot task does not match checkpoint');
+  if(requirePilotCheckout)cleanHead(s.cwd,s.head);
   const ready=boundReadiness(t,await readJson(path.join(pilotDir,'evidence.json')),await readJson(path.join(pilotDir,'review.json')),config);
   required(['READY_FOR_OWNER','DONE'].includes(ready.status),'pilot evidence/review no longer current');
   return {s,t,pilotDir:path.resolve(pilotDir),pilot_digest:hash(s),config_hash:configHash(config),bridge_hash:await bridgeHash()};
@@ -170,6 +178,8 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
       required(state.head===cp.head&&state.branch===cp.branch,'checkpoint candidate changed');
       required(t.candidate_head===state.head||(t.candidate_head===null&&state.phase==='worker'&&state.history.length===0),'task candidate does not match checkpoint head');
       if(state.status==='BLOCKED_TECHNICAL')return state;
+      const currentReview=await readJson(path.join(packetDir,'review.json')).catch(e=>{if(e.code==='ENOENT')return null;throw e;});
+      if(retainMaterial(state,t,currentReview,cwd)&&state.phase!=='worker'){state.phase='repair';await save();}
       if(['DONE','READY_FOR_OWNER'].includes(state.status)){
         const optional=async file=>{try{return await readJson(file);}catch(e){if(e.code==='ENOENT')return null;throw e;}};
         const review=await optional(path.join(packetDir,'review.json'));
@@ -230,6 +240,10 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
         state.phase='worker';await save();continue;
       }
       const decision=executionRoute(t,{executing:true}),tier=role==='reviewer'?decision.reviewer:decision.worker;
+      if(role==='reviewer'){
+        const currentReview=await readJson(path.join(packetDir,'review.json')).catch(e=>{if(e.code==='ENOENT')return null;throw e;});
+        if(retainMaterial(state,t,currentReview,cwd)){state.phase='repair';state.in_flight=null;await save();continue;}
+      }
       if(role==='reviewer'&&state.unresolved_review)required(state.head!==state.unresolved_review.head&&git(cwd,'rev-parse','HEAD^{tree}').trim()!==state.unresolved_review.tree,'unresolved findings require an actual repair before another review');
       if(!config[tier]){state.status='WAITING_CAPABILITY';state.in_flight=null;state.error='Missing configured '+tier;await save();return state;}
       let feedback=state.feedback;

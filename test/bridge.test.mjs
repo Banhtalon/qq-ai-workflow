@@ -93,6 +93,31 @@ test('restoring older matching task and evidence packets cannot approve a newer 
  }finally{await f.cleanup();}
 });
 
+test('material review discovered after entering gate recovery is repaired before another review',async()=>{
+ const f=await setup('pass');try{
+  await f.run();const ep=path.join(f.packetDir,'evidence.json'),rp=path.join(f.packetDir,'review.json');
+  await unlink(ep);assert.equal((await f.run({resume:true})).phase,'gates');
+  const r=await readJson(rp);r.verdict='NEEDS_FIX';r.material_findings=['fix the fixture'];await writeJson(rp,r);
+  const final=await f.run({resume:true});assert.equal(final.status,'READY_FOR_OWNER');assert.equal(final.repair_rounds,1);
+  assert.equal(await readFile(path.join(f.repo,'feature.txt'),'utf8'),'repaired\n');
+ }finally{await f.cleanup();}
+});
+
+test('activation paths reject restored old pilot packets even without checking pilot checkout',async()=>{
+ const f=await setup('pass');try{
+  await f.run();const oldTask=await readJson(f.taskPath),ep=path.join(f.packetDir,'evidence.json'),rp=path.join(f.packetDir,'review.json');
+  const oldEvidence=await readJson(ep),oldReview=await readJson(rp);
+  await writeJson(rp,{...oldReview,verdict:'NEEDS_FIX',material_findings:['fix the fixture']});
+  await f.run({resume:true});await f.run({resume:true});
+  const sp=path.join(f.packetDir,'state.json'),s=await readJson(sp);s.history.find(h=>h.phase==='worker').provider='google';await writeJson(sp,s);
+  const activationDir=path.join(f.dir,'activation');await quotaDrill(f.config,f.packetDir,activationDir);await activate(f.config,f.packetDir,activationDir);
+  await writeJson(f.taskPath,oldTask);await writeJson(ep,oldEvidence);await writeJson(rp,oldReview);
+  await assert.rejects(quotaDrill(f.config,f.packetDir,path.join(f.dir,'new-drill')),/pilot task does not match/);
+  await assert.rejects(activate(f.config,f.packetDir,activationDir),/pilot task does not match/);
+  await assert.rejects(runBridge({cwd:f.repo,taskPath:f.taskPath,config:{...f.config,mode:'LOCAL_AUTO'},packetDir:activationDir,pilot:false}),/pilot task does not match/);
+ }finally{await f.cleanup();}
+});
+
 test('no-op repair cannot obtain another approval or lose unresolved findings',async()=>{
  const f=await setup('noop');try{
   const s=await f.run();assert.equal(s.status,'BLOCKED_TECHNICAL');assert.match(s.error,/no-op repair/);
