@@ -7,7 +7,7 @@ import {git,readJson,writeJson,freeze,verify} from '../scripts/lib/workflow.mjs'
 import {execute,subscriptionEnv,failureStatus} from '../scripts/lib/bridge-process.mjs';
 import {redactText} from '../scripts/lib/redact.mjs';
 import {parseProtocol,invocation,assertSubscriptionSettings,protocolMetadata} from '../scripts/lib/bridge-adapters.mjs';
-import {runBridge,acquire,reviewSource} from '../scripts/lib/bridge.mjs';
+import {runBridge,acquire,reviewSource,quotaDrill,activate} from '../scripts/lib/bridge.mjs';
 
 async function setup(mode='repair') {
   const f=await fixture();git(f.repo,'switch','-c','feature');
@@ -80,6 +80,38 @@ test('default mode cannot execute automatic work or accept fake profile toggle',
     f.config.mode='LOCAL_AUTO';await assert.rejects(f.run({pilot:false}),/ENOENT/);
   }finally{await f.cleanup();}
 });
+test('quota drill binds a completed Windows pilot without calling provider CLIs',async()=>{
+  const f=await setup();try{
+    const state=await f.run();assert.equal(state.status,'READY_FOR_OWNER');
+    const statePath=path.join(f.packetDir,'state.json'),stored=await readJson(statePath);
+    await assert.rejects(quotaDrill(f.config,f.packetDir,path.join(f.dir,'activation')),/both real subscription providers/);
+    stored.history.find(h=>h.phase==='worker').provider='google';
+    stored.capability_history[0].reports.find(r=>r.role==='worker').provider='google';
+    await writeJson(statePath,stored);const before=await readFile(statePath,'utf8'),activationDir=path.join(f.dir,'activation');
+    await assert.rejects(quotaDrill(f.config,f.packetDir,f.packetDir),/must be separate/);
+    const drill=await quotaDrill(f.config,f.packetDir,activationDir);
+    assert.equal(drill.status,'QUOTA_DRILL_PASS');assert.equal(drill.pause.status,'WAITING_QUOTA');assert.equal(drill.resume.automatic_replay,false);
+    assert.equal(await readFile(statePath,'utf8'),before);
+    const receipt=await activate(f.config,f.packetDir,activationDir);assert.equal(receipt.status,'ACCEPTED');
+    const altered=await readJson(path.join(activationDir,'quota-drill.json'));delete altered.pause.history_digest;delete altered.resume.history_digest;await writeJson(path.join(activationDir,'quota-drill.json'),altered);
+    await assert.rejects(activate(f.config,f.packetDir,activationDir),/quota drill receipt/);
+    altered.pause.history_digest=drill.pause.history_digest;altered.resume.history_digest=drill.resume.history_digest;altered.pause.status='DONE';await writeJson(path.join(activationDir,'quota-drill.json'),altered);
+    f.config.mode='LOCAL_AUTO';await assert.rejects(runBridge({cwd:f.repo,taskPath:f.taskPath,config:f.config,packetDir:activationDir,pilot:false}),/quota drill receipt/);
+  }finally{await f.cleanup();}
+});
+test('LOCAL_AUTO resume stays valid after its first task advances the pilot checkout',async()=>{
+  const f=await setup();try{
+    const pilot=await f.run(),statePath=path.join(f.packetDir,'state.json');assert.equal(pilot.status,'READY_FOR_OWNER');
+    const stored=await readJson(statePath);stored.history.find(h=>h.phase==='worker').provider='google';stored.capability_history[0].reports.find(r=>r.role==='worker').provider='google';await writeJson(statePath,stored);
+    const activationDir=path.join(f.dir,'activation'),drill=await quotaDrill(f.config,f.packetDir,activationDir);await activate(f.config,f.packetDir,activationDir);
+    const automatic={...(await readJson(f.taskPath)),task_id:'TASK-AUTO-FOLLOW-UP',base_sha:git(f.repo,'rev-parse','HEAD').trim(),candidate_head:null,contract_sha256:null,implementer_sessions:[],repair_rounds:0,senior_passes:0,user_visible:false,owner_acceptance:null};
+    const automaticPath=path.join(f.dir,'automatic-task.json');await writeJson(automaticPath,automatic);await freeze(automaticPath);
+    f.config.mode='LOCAL_AUTO';const done=await runBridge({cwd:f.repo,taskPath:automaticPath,config:f.config,packetDir:activationDir,pilot:false});assert.equal(done.status,'DONE');
+    assert.notEqual(git(f.repo,'rev-parse','HEAD').trim(),pilot.head);
+    assert.equal((await runBridge({cwd:f.repo,taskPath:automaticPath,config:f.config,packetDir:activationDir,pilot:false,resume:true})).status,'DONE');
+    assert.equal((await readJson(path.join(activationDir,'quota-drill.json'))).pause.history_digest,drill.pause.history_digest);
+  }finally{await f.cleanup();}
+});
 test('protocol requires session, completion and valid result; requested model is not observed model',()=>{
   assert.throws(()=>parseProtocol('openai','{}'),/incomplete/);
   assert.throws(()=>parseProtocol('google',JSON.stringify({response:'{}'})),/session/);
@@ -87,6 +119,21 @@ test('protocol requires session, completion and valid result; requested model is
   const parsed=parseProtocol('google',JSON.stringify({session_id:'session',response:JSON.stringify(body),stats:{models:{'actual-model':{}}}}));
   assert.deepEqual(parsed.observed_models,['actual-model']);
   assert.equal(failureStatus({code:0,stdout:'quota issue discussed',stderr:''}),null);
+});
+test('Codex accepts only known transient transport notices and permits probe-only diagnostics',()=>{
+  const diagnostic={verdict:'PASS',summary:'probe completed',material_findings:['read-only environment'],risk_checks_completed:false};
+  const events=[
+    {type:'thread.started',thread_id:'probe-session'},
+    {type:'error',message:'Reconnecting... 2/5 (temporary transport failure)'},
+    {type:'error',message:'Falling back from WebSockets to HTTPS transport. temporary transport failure'},
+    {type:'item.completed',item:{type:'agent_message',text:JSON.stringify(diagnostic)}},
+    {type:'turn.completed'}
+  ];
+  const transcript=events.map(JSON.stringify).join('\n');
+  assert.throws(()=>parseProtocol('openai',transcript),/invalid structured result/);
+  assert.deepEqual(parseProtocol('openai',transcript,'gemini',{capabilityProbe:true}).result,diagnostic);
+  assert.throws(()=>parseProtocol('openai',events.map((event,index)=>index===1?{type:'error',message:'authentication failed'}:event).map(JSON.stringify).join('\n'),'gemini',{capabilityProbe:true}),/incomplete/);
+  assert.throws(()=>parseProtocol('openai',[...events,{type:'error',message:'Reconnecting... 3/5 (unresolved transport failure)'}].map(JSON.stringify).join('\n'),'gemini',{capabilityProbe:true}),/incomplete/);
 });
 test('redaction preserves long TASK identifiers while hiding standalone credential prefixes',()=>{
   assert.equal(redactText('TASK-LIVE-PILOT-5'),'TASK-LIVE-PILOT-5');

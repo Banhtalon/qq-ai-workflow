@@ -95,11 +95,14 @@ ASSISTED is the default. Lead can execute locally and use already available
 independent sessions/tools; missing capability is WAITING_CAPABILITY.
 The sequential CLI bridge can run explicit supervised pilots while ASSISTED.
 LOCAL_AUTO requires installation, actual account/model probes and a successful
-handoff/repair/quota pilot on Windows. Merely editing a config field is insufficient.
+handoff/repair pilot on Windows. Merely editing a config field is insufficient.
 Activation evidence binds the tested bridge source, account bindings and pilot state.
 The accepted pilot uses both actual subscription providers, a fresh review, a
-reviewer-or-gate repair, final evidence, and a naturally observed preflight quota
-pause followed by safe resume. Do not deliberately exhaust a subscription to create
-this record. The CLI bridge documents commands and persisted checkpoints; it does not
-change these activation conditions.
+reviewer-or-gate repair and final evidence. Before activation, the Lead runs the
+deterministic quota drill against that accepted pilot. The drill exercises the same
+preflight handling: it records `WAITING_QUOTA`, keeps the checkpoint unchanged, and
+requires a fresh safe preflight before work could continue. It does not call a
+provider or prove a provider's live quota-error wording; a later natural quota event
+is additional operational evidence, not an activation prerequisite. The CLI bridge
+documents commands and persisted checkpoints; it does not change these conditions.
 See [CLI operations](CLI_BRIDGE.md) for commands and conservative interruption recovery.

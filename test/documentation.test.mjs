@@ -40,5 +40,5 @@ test("canonical spec owns elevated review and repair-budget rules",()=>{
 test("canonical spec owns Fast Lane and LOCAL_AUTO conditions",()=>{
  const canonical=readFileSync(join(workspace,".ai-workflow/V10_CANONICAL_SPEC.md"),"utf8");
  assert.match(canonical,/Fast Lane only routes a clean documentation-only candidate/u);
- assert.match(canonical,/naturally observed preflight quota\s+pause followed by safe resume/u);
+ assert.match(canonical,/deterministic quota drill/u);
 });

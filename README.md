@@ -1,5 +1,5 @@
 # QQ AI Workflow v10 — Personal Local
-Version: **10.0.0-rc.1** · Stage: **sequential CLI bridge; awaiting real Windows acceptance**
+Version: **10.0.0-rc.1** · Stage: **sequential CLI bridge; LOCAL_AUTO requires quota-drill activation**
 
 Một Codex nhận yêu cầu, tự làm hoặc giao Gemini, kiểm thử, gọi reviewer độc lập,
 sửa lỗi và đưa bản dùng thử cho Owner. Dành cho một người dùng, dự án nhỏ trên
@@ -20,7 +20,8 @@ TASK-11 của mindx-review-bot.
 - Công cụ local: chốt contract, chạy gates có che thông tin nhạy cảm,
   kiểm tra gói kết quả, đề xuất route và báo trạng thái.
 - [Cầu nối CLI tuần tự](.ai-workflow/CLI_BRIDGE.md): worker → kiểm thử → reviewer → sửa,
-  có checkpoint và giới hạn sửa. Mặc định ASSISTED; chỉ bật LOCAL_AUTO sau pilot thật.
+  có checkpoint và giới hạn sửa. Mặc định ASSISTED; chỉ bật LOCAL_AUTO sau pilot thật
+  và quota drill kiểm tra dừng/tiếp tục khi hết hạn mức.
   Không tự đăng nhập, không tự mua credit, không có scheduler nền.
 - [Luồng Nhanh bằng máy](.ai-workflow/FAST_LANE.md): chỉ định tuyến thay đổi tài liệu
   thuộc allowlist cố định; mọi trường hợp không chứng minh được đều quay về Luồng Tính năng.

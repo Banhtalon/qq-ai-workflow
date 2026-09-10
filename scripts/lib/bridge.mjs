@@ -45,7 +45,16 @@ export async function inspect(cwd,config,packetDir,probe=false,signal) {
   await atomicJson(path.join(packetDir,'doctor.json'),result);return result;
 }
 
-export async function activate(config,pilotDir,outputDir) {
+export function applyPreflight(state,capability) {
+  const next=structuredClone(state);next.capability_history??=[];next.capability_history.push(capability);
+  if(capability.status!=='PROBED') {
+    next.status=capability.reports?.some(r=>r.execution?.status==='WAITING_QUOTA')?'WAITING_QUOTA':'WAITING_CAPABILITY';
+    return {state:next,proceed:false};
+  }
+  next.status='STARTING';return {state:next,proceed:true};
+}
+
+async function acceptedPilot(config,pilotDir,{requirePilotCheckout=true}={}) {
   validateConfig(config);
   const s=await readJson(path.join(pilotDir,'state.json'));
   required(process.platform==='win32'&&s.platform==='win32'&&s.pilot===true,'real Windows pilot required');
@@ -54,12 +63,51 @@ export async function activate(config,pilotDir,outputDir) {
   required(s.repair_rounds>=1,'live reviewer-to-worker repair required');
   const calls=s.history.filter(h=>['worker','reviewer'].includes(h.phase)&&!h.status&&h.session_id);
   required(new Set(calls.map(c=>c.provider)).size===2,'both real subscription providers required');
-  required(s.capability_history?.some(c=>c.reports.some(r=>r.execution?.status==='WAITING_QUOTA')),'observed subscription quota pause and safe resume required; synthetic tests do not enable LOCAL_AUTO');
-  const t=await readJson(s.task_path);await assertContract(s.task_path,t);cleanHead(s.cwd,s.head);
+  const t=await readJson(s.task_path);await assertContract(s.task_path,t);if(requirePilotCheckout)cleanHead(s.cwd,s.head);
   const ready=readiness(t,await readJson(path.join(pilotDir,'evidence.json')),await readJson(path.join(pilotDir,'review.json')));
   required(['READY_FOR_OWNER','DONE'].includes(ready.status),'pilot evidence/review no longer current');
+  return {s,t,pilotDir:path.resolve(pilotDir),pilot_digest:hash(s),config_hash:configHash(config),bridge_hash:await bridgeHash()};
+}
+
+function separateOutput(pilotDir,outputDir) {
+  const target=path.resolve(outputDir),relative=path.relative(pilotDir,target);
+  required(relative!==''&&(relative==='..'||relative.startsWith(`..${path.sep}`)||path.isAbsolute(relative)),'quota drill and activation packets must be separate from accepted pilot packets');
+  return target;
+}
+
+export async function quotaDrill(config,pilotDir,outputDir) {
+  const pilot=await acceptedPilot(config,pilotDir);
+  outputDir=separateOutput(pilot.pilotDir,outputDir);
+  const before=JSON.stringify(pilot.s),history_digest=hash(pilot.s.history);
+  const paused=applyPreflight(pilot.s,{schema_version:'qq.bridge.doctor.v1',status:'WAITING_CAPABILITY',reports:[{
+    role:'quota-drill',provider:'subscription',execution:{status:'WAITING_QUOTA',reason:'DETERMINISTIC_QUOTA_DRILL'}
+  }]});
+  required(!paused.proceed&&paused.state.status==='WAITING_QUOTA'&&!paused.state.in_flight&&!paused.state.reconciliation_required&&hash(paused.state.history)===history_digest,'quota drill did not preserve a safe pause');
+  const resumed=applyPreflight(paused.state,{schema_version:'qq.bridge.doctor.v1',status:'PROBED',reports:[]});
+  required(resumed.proceed&&resumed.state.status==='STARTING'&&!resumed.state.in_flight&&!resumed.state.reconciliation_required&&hash(resumed.state.history)===history_digest,'quota drill did not require a safe preflight resume');
+  required(JSON.stringify(pilot.s)===before,'quota drill changed the accepted pilot');
   await mkdir(outputDir,{recursive:true});
-  const receipt={status:'ACCEPTED',platform:'win32',pilot_dir:path.resolve(pilotDir),pilot_digest:hash(s),config_hash:configHash(config),bridge_hash:await bridgeHash()};
+  const receipt={schema_version:'qq.bridge.quota-drill.v1',status:'QUOTA_DRILL_PASS',platform:'win32',pilot_dir:pilot.pilotDir,pilot_digest:pilot.pilot_digest,
+    config_hash:pilot.config_hash,bridge_hash:pilot.bridge_hash,head:pilot.s.head,
+    pause:{status:'WAITING_QUOTA',phase:'preflight',history_digest},resume:{status:'RESUMED_SAFE',fresh_preflight:true,automatic_replay:false,history_digest}};
+  await atomicJson(path.join(outputDir,'quota-drill.json'),receipt);return receipt;
+}
+
+async function checkedQuotaDrill(pilot,outputDir) {
+  let drill;try{drill=await readJson(path.join(outputDir,'quota-drill.json'));}catch(error){if(error.code==='ENOENT')throw Error('quota drill receipt required before activation');throw error;}
+  const history_digest=hash(pilot.s.history);
+  required(drill?.schema_version==='qq.bridge.quota-drill.v1'&&drill.status==='QUOTA_DRILL_PASS','invalid quota drill receipt');
+  required(drill.platform==='win32'&&drill.pilot_dir===pilot.pilotDir&&drill.pilot_digest===pilot.pilot_digest&&drill.config_hash===pilot.config_hash&&drill.bridge_hash===pilot.bridge_hash&&drill.head===pilot.s.head,'quota drill receipt is stale or does not bind to the accepted pilot');
+  required(drill.pause?.status==='WAITING_QUOTA'&&drill.pause.phase==='preflight'&&drill.resume?.status==='RESUMED_SAFE'&&drill.resume.fresh_preflight===true&&drill.resume.automatic_replay===false&&drill.pause.history_digest===history_digest&&drill.resume.history_digest===history_digest,'quota drill receipt does not prove pause and safe resume');
+  return drill;
+}
+
+export async function activate(config,pilotDir,outputDir) {
+  const pilot=await acceptedPilot(config,pilotDir);
+  outputDir=separateOutput(pilot.pilotDir,outputDir);
+  const drill=await checkedQuotaDrill(pilot,outputDir);
+  await mkdir(outputDir,{recursive:true});
+  const receipt={status:'ACCEPTED',platform:'win32',pilot_dir:pilot.pilotDir,pilot_digest:pilot.pilot_digest,config_hash:pilot.config_hash,bridge_hash:pilot.bridge_hash,quota_drill_digest:hash(drill)};
   await atomicJson(path.join(outputDir,'activation.json'),receipt);return receipt;
 }
 
@@ -107,7 +155,8 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
       required(config.mode==='LOCAL_AUTO','ASSISTED: use the explicit pilot command until real Windows acceptance');
       const receipt=await readJson(path.join(packetDir,'activation.json'));
       required(receipt.status==='ACCEPTED'&&receipt.config_hash===configHash(config)&&receipt.platform==='win32'&&receipt.bridge_hash===await bridgeHash(),'missing or stale live activation receipt');
-      required(hash(await readJson(path.join(receipt.pilot_dir,'state.json')))===receipt.pilot_digest,'pilot receipt changed');
+      const accepted=await acceptedPilot(config,receipt.pilot_dir,{requirePilotCheckout:false}),drill=await checkedQuotaDrill(accepted,packetDir);
+      required(receipt.pilot_digest===accepted.pilot_digest&&receipt.quota_drill_digest===hash(drill),'activation receipt changed');
     }
     if(resume) {
       state=await readJson(statePath);
@@ -127,8 +176,8 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
     }
     // No writer starts until all configured subscription accounts/models answer.
     const capability=await inspect(cwd,config,path.join(packetDir,'capabilities'),true,signal);
-    state.capability_history.push(capability);await save();
-    if(capability.status!=='PROBED') {state.status=capability.reports.some(r=>r.execution?.status==='WAITING_QUOTA')?'WAITING_QUOTA':'WAITING_CAPABILITY';await save();return state;}
+    const preflight=applyPreflight(state,capability);state=preflight.state;await save();
+    if(!preflight.proceed)return state;
     while(true) {
       t=await readJson(taskPath);await assertContract(taskPath,t);
       required(t.repair_rounds===state.repair_rounds&&t.senior_passes===state.senior_passes,'counter mismatch');

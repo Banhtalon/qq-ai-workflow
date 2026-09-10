@@ -63,12 +63,19 @@ export function protocolMetadata(provider,stdout,cli) {
   return safe({...(typeof session==='string'&&session?{session_id:session}:{}),...(denied.length?{denied_actions:denied}:{})});
 }
 
-export function parseProtocol(provider,stdout,cli='gemini') {
+function transientOpenAITransportEvent(event) {
+  if(event.type!=='error')return false;
+  const message=event.message??event.error?.message??'';
+  return /^Reconnecting\.\.\. \d+\/\d+ \(/.test(message)||/^Falling back from WebSockets to HTTPS transport\./.test(message);
+}
+
+export function parseProtocol(provider,stdout,cli='gemini',{capabilityProbe=false}={}) {
   let session,models=[],body;
   if(provider==='openai') {
     const events=stdout.trim().split(/\r?\n/).map(line=>JSON.parse(line));
     const starts=events.filter(e=>e.type==='thread.started');
-    if(starts.length!==1||!events.some(e=>e.type==='turn.completed')||events.some(e=>['error','turn.failed'].includes(e.type)))throw Error('incomplete Codex protocol');
+    const completed=events.findLastIndex(e=>e.type==='turn.completed'),lastTransient=events.findLastIndex(transientOpenAITransportEvent);
+    if(starts.length!==1||completed<0||lastTransient>=completed||events.some(e=>e.type==='turn.failed'||(e.type==='error'&&!transientOpenAITransportEvent(e))))throw Error('incomplete Codex protocol');
     session=starts[0].thread_id;
     const messages=events.filter(e=>e.type==='item.completed'&&e.item?.type==='agent_message');
     body=messages.at(-1)?.item.text;
@@ -88,7 +95,7 @@ export function parseProtocol(provider,stdout,cli='gemini') {
   const result=JSON.parse(body.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, ''));
   if(!result||!['PASS','NEEDS_FIX','BLOCKED'].includes(result.verdict)||typeof result.summary!=='string'||
     !Array.isArray(result.material_findings)||!result.material_findings.every(x=>typeof x==='string')||typeof result.risk_checks_completed!=='boolean'||
-    (result.verdict==='PASS'&&result.material_findings.length))throw Error('invalid structured result');
+    (result.verdict==='PASS'&&result.material_findings.length&&!capabilityProbe))throw Error('invalid structured result');
   return safe({session_id:session,observed_models:models,result});
 }
 
@@ -99,7 +106,7 @@ export async function invoke(binding,options) {
     started_at:r.started_at,finished_at:r.finished_at,status:failureStatus(r)});
   Object.assign(record,protocolMetadata(binding.provider,r.stdout,binding.cli??'antigravity'));
   if(!record.status&&record.denied_actions?.length){record.status='WAITING_CAPABILITY';record.reason='TOOL_PERMISSION_DENIED';}
-  if(!record.status){try{Object.assign(record,parseProtocol(binding.provider,r.stdout,binding.cli??'antigravity'));}catch{record.status='BLOCKED_TECHNICAL';record.reason='INVALID_PROTOCOL';}}
+  if(!record.status){try{Object.assign(record,parseProtocol(binding.provider,r.stdout,binding.cli??'antigravity',{capabilityProbe:options.role==='probe'}));}catch{record.status='BLOCKED_TECHNICAL';record.reason='INVALID_PROTOCOL';}}
   return record;
 }
 
