@@ -1,4 +1,4 @@
-Read AGENTS.md and the current shared task/handoff. Implement only the agreed
-feature in the selected branch. One writer. Preserve acceptance criteria and gates.
-Return exact head, actual tests and unresolved failures to Lead in the result file.
-Do not self-review or claim completion. Do not launch extra agents.
+# Implementer task entry
+
+Đọc [quy tắc workflow v10](../V10_CANONICAL_SPEC.md) cùng task packet hiện tại.
+Prompt này không bổ sung quy tắc workflow.

@@ -11,6 +11,13 @@ Any contract change starts a new revision, records why, invalidates evidence/rev
 never silently weaken gates. A task uses one workflow version throughout a revision.
 Legacy v9 rules apply only to explicitly unconverted host tasks.
 
+## Document hierarchy
+This specification is the sole source of workflow rules. Supporting documents may
+describe commands, file formats, recovery steps or Owner-facing examples, but cannot
+add, remove or reinterpret workflow rules. When a supporting guide appears to add a
+rule, the documentation checker reports it as an advisory; revise this specification
+in a new task revision before treating that guidance as a rule.
+
 ## Responsibilities
 Owner: describe behavior, decide product tradeoffs, account-only actions,
 functional acceptance, final merge approval. No code, logs, SQL or CI judgment.
