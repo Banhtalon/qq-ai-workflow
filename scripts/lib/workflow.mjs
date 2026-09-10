@@ -137,7 +137,7 @@ export async function verify(taskPath,cwd,{signal}={}){
     effective_risk:t.effective_risk,recorded_at:new Date().toISOString(),
     status:results.length===t.gates.length&&results.every(g=>g.code===0&&!g.timed_out)?"PASS":"FAIL",gates:results};
 }
-export function readiness(t,e,r){
+export function readiness(t,e,r,{reviewerBinding}={}){
   validateTask(t);
   const wait=reason=>({status:"NEEDS_FIX",reason});
   if(!sha(t.candidate_head)||t.contract_sha256!==contractHash(t)||!["LOW","ELEVATED"].includes(t.effective_risk))return wait("contract/head invalid");
@@ -152,6 +152,10 @@ export function readiness(t,e,r){
       b.code!==0||b.timed_out!==false||b.redaction_applied!==true)return wait("required gate not passed");
   }
   if(!r)return {status:"WAITING_CAPABILITY",reason:"independent review needed"};
+  if(t.execution?.policy==='GEMINI_FIRST_V1'){
+    if(!reviewerBinding||!['google','openai'].includes(reviewerBinding.provider)||!text(reviewerBinding.model))return {status:'WAITING_CAPABILITY',reason:'expected reviewer binding required'};
+    if(r.reviewer_binding_hash!==digest(reviewerBinding))return wait('review binding is stale');
+  }
   if(t.execution?.policy==='GEMINI_FIRST_V1'&&(r.effective_risk!==t.effective_risk||r.reviewer_tier!==executionRoute(t).reviewer))return wait('review risk or tier is stale');
   if(r.schema_version!=="qq.workflow.review.v10"||r.task_id!==t.task_id||r.revision!==t.revision||
     r.head!==t.candidate_head||r.contract_sha256!==t.contract_sha256||r.independent!==true||

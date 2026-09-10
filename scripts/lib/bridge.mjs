@@ -27,8 +27,7 @@ export function validateConfig(c) {
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
 const configHash=c=>hash({...c,mode:'ASSISTED'});
 function boundReadiness(t,e,r,config){
-  if(t.execution?.policy==='GEMINI_FIRST_V1'&&r&&r.reviewer_binding_hash!==hash(config[executionRoute(t).reviewer]??null))return {status:'NEEDS_FIX',reason:'review binding is stale'};
-  return readiness(t,e,r);
+  return readiness(t,e,r,{reviewerBinding:config[executionRoute(t).reviewer]});
 }
 async function bridgeHash(){return hash(await Promise.all(['bridge.mjs','bridge-adapters.mjs','bridge-process.mjs','workflow.mjs','redact.mjs'].map(f=>readFile(new URL(f,import.meta.url),'utf8'))));}
 export async function acquire(cwd) {
@@ -194,7 +193,8 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
     if(!config[executionRoute(t).reviewer]){state.status='WAITING_CAPABILITY';state.error='required reviewer binding missing';await save();return state;}
     if(resume&&state.phase==='reviewer'&&state.status==='WAITING_CAPABILITY'){
       const review=await readJson(path.join(packetDir,'review.json')).catch(e=>{if(e.code==='ENOENT')return null;throw e;});
-      const ready=boundReadiness(t,await readJson(path.join(packetDir,'evidence.json')),review,config);
+      const evidence=await readJson(path.join(packetDir,'evidence.json')).catch(e=>{if(e.code==='ENOENT')return null;throw e;});
+      const ready=boundReadiness(t,evidence,review,config);
       if(['DONE','READY_FOR_OWNER'].includes(ready.status)||ready.reason==='current local browser evidence needed'){state.status=ready.status;await save();return state;}
       if(review?.head===t.candidate_head&&review.contract_sha256===t.contract_sha256&&Array.isArray(review.material_findings)&&review.material_findings.length){state.phase='repair';state.feedback=review;await save();}
       else if(ready.status==='NEEDS_FIX'&&!ready.reason?.startsWith('review')){state.phase='gates';await save();}
@@ -215,17 +215,21 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
         const evidence=await verify(taskPath,cwd,{signal});await atomicJson(path.join(packetDir,'evidence.json'),evidence);
         state.history.push({phase:role,head:state.head,evidence});
         if(evidence.gates.some(g=>g.timed_out||g.interrupted)){state.status='BLOCKED_TECHNICAL';state.reconciliation_required=true;await save();return state;}
-        state.in_flight=null;state.feedback=evidence;
+        state.in_flight=null;state.feedback=state.unresolved_review?{evidence,unresolved_review:state.unresolved_review}:evidence;
         state.phase=evidence.status==='PASS'?'reviewer':'repair';await save();continue;
       }
       if(role==='repair') {
         state.in_flight=null;
+        if(Array.isArray(state.feedback?.material_findings)&&state.feedback.material_findings.length){
+          state.unresolved_review={head:state.head,tree:git(cwd,'rev-parse','HEAD^{tree}').trim(),review:state.feedback};
+        }
         if(state.senior_passes>=1){state.status='BLOCKED_TECHNICAL';await save();return state;}
         if(state.repair_rounds<2)state.repair_rounds++;else state.senior_passes++;
         t.repair_rounds=state.repair_rounds;t.senior_passes=state.senior_passes;await writeJson(taskPath,t);
         state.phase='worker';await save();continue;
       }
       const decision=executionRoute(t,{executing:true}),tier=role==='reviewer'?decision.reviewer:decision.worker;
+      if(role==='reviewer'&&state.unresolved_review)required(state.head!==state.unresolved_review.head&&git(cwd,'rev-parse','HEAD^{tree}').trim()!==state.unresolved_review.tree,'unresolved findings require an actual repair before another review');
       if(!config[tier]){state.status='WAITING_CAPABILITY';state.in_flight=null;state.error='Missing configured '+tier;await save();return state;}
       const source=role==='reviewer'?reviewSource(cwd,t,config):null;
       const result=await invoke(config[tier],{cwd,packetDir:path.join(packetDir,state.in_flight.id),role,
@@ -242,6 +246,7 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
         const changed=git(cwd,'-c','status.renames=false','status','--porcelain=v1','-z','--untracked-files=all');
         required(!git(cwd,'diff','--cached','--name-only').trim(),'agent staged changes');
         const paths=changed.split('\0').filter(Boolean).map(x=>x.slice(3));
+        if(state.unresolved_review&&!paths.length){state.status='BLOCKED_TECHNICAL';state.error='no-op repair leaves material findings unresolved';state.in_flight=null;await save();return state;}
         required(paths.every(p=>config.write_paths.includes(p)),'worker exceeded write_paths');
         required(paths.every(p=>!protectedPaths(t,config).some(x=>p===x||p.startsWith(x+'/'))),'worker touched protected task/gate paths');
         required(!paths.some(p=>/(^|\/)\.env(?:\.|$)|credential|oauth|auth\.json/i.test(p)),'credential-like file must be inspected by Lead');
@@ -266,8 +271,8 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
         await atomicJson(path.join(packetDir,'review.json'),review);
         state.feedback=review;
         const ready=boundReadiness(t,await readJson(path.join(packetDir,'evidence.json')),review,config);
-        if(['DONE','READY_FOR_OWNER'].includes(ready.status)){state.status=ready.status;state.in_flight=null;await save();return state;}
-        if(ready.status==='WAITING_CAPABILITY'){state.status=ready.status;state.in_flight=null;state.error=ready.reason;await save();return state;}
+        if(['DONE','READY_FOR_OWNER'].includes(ready.status)){state.unresolved_review=null;state.status=ready.status;state.in_flight=null;await save();return state;}
+        if(ready.status==='WAITING_CAPABILITY'){if(ready.reason==='current local browser evidence needed')state.unresolved_review=null;state.status=ready.status;state.in_flight=null;state.error=ready.reason;await save();return state;}
         state.phase='repair';
       }
       state.in_flight=null;await save();

@@ -23,11 +23,11 @@ if(!probe&&mode==='quota'){console.error('429 quota exhausted');process.exit(1);
 if(!probe&&mode==='timeout'){setInterval(()=>{},1000);await new Promise(()=>{});}
 if(!probe&&mode==='invalid'){console.log('not JSON');process.exit(0);}
 if(!probe&&mode==='self'){}
-if(!probe&&worker){writeFileSync('feature.txt',input.includes('fix the fixture')?'repaired\\n':'written\\n');}
+if(!probe&&worker&&!(mode==='noop'&&input.includes('fix the fixture'))){writeFileSync('feature.txt',mode==='always-fail'?randomUUID():(input.includes('fix the fixture')?'repaired\\n':'written\\n'));}
 if(!probe&&mode==='review-write'&&!worker)writeFileSync('feature.txt','reviewer mutation');
 if(!probe&&mode==='out-of-scope'&&worker)writeFileSync('unexpected.txt','oops');
 if(!probe&&mode==='weaken-gate'&&worker)writeFileSync('package.json',JSON.stringify({scripts:{test:'node -e "process.exit(0)"'}}));
-const fail=!probe&&!worker&&(mode==='always-fail'||(mode==='repair'&&readFileSync('feature.txt','utf8')!=='repaired\\n'));
+const fail=!probe&&!worker&&(mode==='always-fail'||mode==='noop'||(mode==='repair'&&readFileSync('feature.txt','utf8')!=='repaired\\n'));
 const result={verdict:fail?'NEEDS_FIX':'PASS',summary:'fake process',material_findings:fail?['fix the fixture']:[],risk_checks_completed:true};
 console.log(JSON.stringify({type:'thread.started',thread_id:mode==='self'?'same-session':randomUUID()}));
 console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:JSON.stringify(result)}}));
@@ -75,6 +75,29 @@ test('cached readiness is invalidated when independent review is removed',async(
   await unlink(path.join(f.packetDir,'review.json'));
   assert.equal((await f.run({resume:true})).status,'WAITING_CAPABILITY');
   assert.equal((await f.run({resume:true})).status,'READY_FOR_OWNER');
+ }finally{await f.cleanup();}
+});
+
+test('no-op repair cannot obtain another approval or lose unresolved findings',async()=>{
+ const f=await setup('noop');try{
+  const s=await f.run();assert.equal(s.status,'BLOCKED_TECHNICAL');assert.match(s.error,/no-op repair/);
+  assert.equal(s.history.filter(h=>h.phase==='reviewer').length,1);
+  assert.deepEqual(s.unresolved_review.review.material_findings,['fix the fixture']);
+  assert.equal(s.repair_rounds,1);assert.equal(s.in_flight,null);
+ }finally{await f.cleanup();}
+});
+
+test('missing verification during browser wait regenerates gates without a terminal error',async()=>{
+ const f=await setup('pass');try{
+  const taskPath=path.join(f.dir,'browser.json');
+  await writeJson(taskPath,{...await readJson(f.taskPath),task_id:'TASK-BROWSER-MISSING-EVIDENCE',execution:{policy:'GEMINI_FIRST_V1',prepared:true,local_synthetic:true,rationale:'Fixture',design_sessions:[],browser_required:true}});await freeze(taskPath);
+  const config={...f.config,elevated_reviewer:f.config.reviewer};
+  const run=resume=>runBridge({cwd:f.repo,taskPath,config,packetDir:f.packetDir,pilot:true,resume});
+  assert.equal((await run(false)).status,'WAITING_CAPABILITY');
+  await unlink(path.join(f.packetDir,'evidence.json'));
+  const resumed=await run(true);assert.equal(resumed.status,'WAITING_CAPABILITY');assert.equal(resumed.repair_rounds,0);
+  assert.equal(resumed.history.filter(h=>h.phase==='gates').length,2);
+  assert.equal((await readJson(path.join(f.packetDir,'evidence.json'))).status,'PASS');
  }finally{await f.cleanup();}
 });
 
