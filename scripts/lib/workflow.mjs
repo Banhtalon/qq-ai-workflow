@@ -52,6 +52,7 @@ export function validateTask(t){
     required(Array.isArray(x.design_sessions)&&x.design_sessions.every(text),'invalid design sessions');
     required(typeof x.browser_required==='boolean','invalid browser requirement');
     if(x.source_approvals_sha256!==undefined)required(/^[a-f0-9]{64}$/.test(x.source_approvals_sha256),'invalid source approvals digest');
+    if(x.review_source_required!==undefined)required(typeof x.review_source_required==='boolean','invalid source requirement');
   }
   return t;
 }
@@ -138,7 +139,7 @@ export async function verify(taskPath,cwd,{signal}={}){
     effective_risk:t.effective_risk,recorded_at:new Date().toISOString(),
     status:results.length===t.gates.length&&results.every(g=>g.code===0&&!g.timed_out)?"PASS":"FAIL",gates:results};
 }
-export function readiness(t,e,r,{reviewerBinding}={}){
+export function readiness(t,e,r,{reviewerBinding,sourceSnapshot,sourceConfigHash}={}){
   validateTask(t);
   const wait=reason=>({status:"NEEDS_FIX",reason});
   if(!sha(t.candidate_head)||t.contract_sha256!==contractHash(t)||!["LOW","ELEVATED"].includes(t.effective_risk))return wait("contract/head invalid");
@@ -162,6 +163,10 @@ export function readiness(t,e,r,{reviewerBinding}={}){
     r.head!==t.candidate_head||r.contract_sha256!==t.contract_sha256||r.independent!==true||
     !text(r.reviewer_session)||t.implementer_sessions.includes(r.reviewer_session)||t.execution?.design_sessions.includes(r.reviewer_session))
     return wait("review is stale or not independent");
+  if(r.source_sha256!==undefined||r.source_file!==undefined||t.execution?.review_source_required){
+    if(!/^[a-f0-9]{64}$/.test(r.source_sha256??'')||!text(r.source_file)||!sourceSnapshot||digest(sourceSnapshot)!==r.source_sha256||
+      sourceSnapshot.schema_version!=='qq.bridge.review-source.v1'||sourceSnapshot.task_id!==t.task_id||sourceSnapshot.revision!==t.revision||sourceSnapshot.base!==t.base_sha||sourceSnapshot.head!==t.candidate_head||sourceSnapshot.contract_sha256!==t.contract_sha256||!sourceConfigHash||sourceSnapshot.config_hash!==sourceConfigHash)return wait('review source is missing or stale');
+  }
   if(r.verdict!=="PASS"||!Array.isArray(r.material_findings)||r.material_findings.length>0)
     return wait("review has unresolved findings");
   if((t.risk==="ELEVATED"||t.effective_risk==="ELEVATED"||e.effective_risk==="ELEVATED")&&r.risk_checks_completed!==true)

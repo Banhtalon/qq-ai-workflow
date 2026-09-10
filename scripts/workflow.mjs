@@ -1,6 +1,6 @@
 import path from "node:path";
 import {readJson,writeJson,freeze,verify,route,readiness,assertContract,cleanHead,git,executionRoute} from "./lib/workflow.mjs";
-import {validateConfig} from './lib/bridge.mjs';
+import {validateConfig,loadReviewSource,configHash} from './lib/bridge.mjs';
 import {redactText} from "./lib/redact.mjs";
 const [command,...args]=process.argv.slice(2);
 try{
@@ -24,7 +24,8 @@ try{
     const t=await readJson(args[0]);await assertContract(args[0],t);cleanHead(args[3],t.candidate_head);
     const optional=async p=>{try{return await readJson(p);}catch(e){if(e.code==="ENOENT")return null;throw e;}};
     const config=args[4]?validateConfig(await readJson(args[4])):null;
-    result={...readiness(t,await optional(args[1]),await optional(args[2]),{reviewerBinding:config?.[executionRoute(t).reviewer]}),task_id:t.task_id,head:t.candidate_head,
+    const review=await optional(args[2]),sourceSnapshot=await loadReviewSource(path.dirname(path.resolve(args[2])),review);
+    result={...readiness(t,await optional(args[1]),review,{reviewerBinding:config?.[executionRoute(t).reviewer],sourceSnapshot,sourceConfigHash:config?configHash(config):null}),task_id:t.task_id,head:t.candidate_head,
       goal:t.goal,local_url:t.ui_evidence?.head===t.candidate_head&&t.ui_evidence?.contract_sha256===t.contract_sha256?t.ui_evidence.url:null};
     if(!["DONE","READY_FOR_OWNER"].includes(result.status))process.exitCode=1;
   }else{

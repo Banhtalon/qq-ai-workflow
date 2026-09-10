@@ -4,11 +4,11 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {writeFile,readFile,mkdir,unlink} from 'node:fs/promises';
 import {fixture} from './fixture.mjs';
-import {git,readJson,writeJson,freeze,verify} from '../scripts/lib/workflow.mjs';
+import {git,readJson,writeJson,freeze,verify,readiness} from '../scripts/lib/workflow.mjs';
 import {execute,subscriptionEnv,failureStatus} from '../scripts/lib/bridge-process.mjs';
 import {redactText} from '../scripts/lib/redact.mjs';
 import {parseProtocol,invocation,assertSubscriptionSettings,protocolMetadata} from '../scripts/lib/bridge-adapters.mjs';
-import {runBridge,acquire,reviewSource,quotaDrill,activate,sourceAllowed,validateConfig} from '../scripts/lib/bridge.mjs';
+import {runBridge,acquire,reviewSource,quotaDrill,activate,sourceAllowed,validateConfig,loadReviewSource,configHash} from '../scripts/lib/bridge.mjs';
 
 async function setup(mode='repair') {
   const f=await fixture();git(f.repo,'switch','-c','feature');
@@ -84,6 +84,28 @@ test('direct gate scripts are included and missing scripts stop the review packe
   assert.ok(reviewSource(f.repo,t,f.config).files.some(p=>p.path==='check.mjs'));
   t.gates[0].argv[1]='missing.mjs';assert.throws(()=>reviewSource(f.repo,t,f.config),/missing/);
  }finally{await f.cleanup();}
+});
+
+test('cached bridge readiness and activation reject missing or changed persisted source',async()=>{
+ const f=await setup('repair');try{
+  await f.run();const rp=path.join(f.packetDir,'review.json'),r=await readJson(rp),t=await readJson(f.taskPath),e=await readJson(path.join(f.packetDir,'evidence.json'));
+  const file=path.join(f.packetDir,r.source_file),original=await readFile(file,'utf8');
+  const snapshot=await loadReviewSource(f.packetDir,r);
+  assert.equal(readiness(t,e,r,{sourceSnapshot:snapshot,sourceConfigHash:configHash(f.config)}).status,'READY_FOR_OWNER');
+  await writeFile(file,original.replace('repaired','tampered'));
+  assert.equal(readiness(t,e,r,{sourceSnapshot:await loadReviewSource(f.packetDir,r),sourceConfigHash:configHash(f.config)}).status,'NEEDS_FIX');
+  await unlink(file);assert.equal(await loadReviewSource(f.packetDir,r),null);
+  const sp=path.join(f.packetDir,'state.json'),s=await readJson(sp);s.history.find(h=>h.phase==='worker').provider='google';await writeJson(sp,s);
+  await assert.rejects(quotaDrill(f.config,f.packetDir,path.join(f.dir,'activation')),/evidence\/review/);
+  const resumed=await f.run({resume:true});assert.equal(resumed.status,'NEEDS_FIX');assert.match(resumed.error,/source/);
+  await writeFile(file,original);assert.equal((await f.run({resume:true})).status,'READY_FOR_OWNER');
+ }finally{await f.cleanup();}
+});
+
+test('provider JSON cannot overwrite trusted source or identity fields',()=>{
+ const result={verdict:'PASS',summary:'fixture',material_findings:[],risk_checks_completed:true,source_sha256:'spoofed'};
+ const output=[{type:'thread.started',thread_id:'fixture'},{type:'item.completed',item:{type:'agent_message',text:JSON.stringify(result)}},{type:'turn.completed'}].map(x=>JSON.stringify(x)).join('\n');
+ assert.throws(()=>parseProtocol('openai',output),/unexpected structured result field/);
 });
 
 test('review packet checks both Git versions, includes declared context and rejects missing or stale approvals',async()=>{

@@ -95,6 +95,7 @@ export function parseProtocol(provider,stdout,cli='gemini',{capabilityProbe=fals
   }
   if(typeof session!=='string'||!session.trim()||typeof body!=='string')throw Error('missing session or structured response');
   const result=JSON.parse(body.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, ''));
+  if(result&&Object.keys(result).some(k=>!['verdict','summary','material_findings','risk_checks_completed'].includes(k)))throw Error('unexpected structured result field');
   if(!result||!['PASS','NEEDS_FIX','BLOCKED'].includes(result.verdict)||typeof result.summary!=='string'||
     !Array.isArray(result.material_findings)||!result.material_findings.every(x=>typeof x==='string')||typeof result.risk_checks_completed!=='boolean'||
     (result.verdict==='PASS'&&result.material_findings.length&&!capabilityProbe))throw Error('invalid structured result');

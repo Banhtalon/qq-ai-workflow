@@ -50,7 +50,7 @@ export function validateConfig(c) {
   return c;
 }
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
-const configHash=c=>hash({...c,mode:'ASSISTED'});
+export const configHash=c=>hash({...c,mode:'ASSISTED'});
 function bindSourceApprovals(t,config){
   if(config.synthetic_source_approvals?.length||t.execution?.source_approvals_sha256)required(t.execution?.source_approvals_sha256===hash(config.synthetic_source_approvals??[]),'synthetic source approvals do not match frozen task');
 }
@@ -60,8 +60,17 @@ function retainMaterial(state,t,review,cwd){
   state.unresolved_review={head:state.head,tree:git(cwd,'rev-parse','HEAD^{tree}').trim(),review};
   state.feedback=review;return true;
 }
-function boundReadiness(t,e,r,config){
-  return readiness(t,e,r,{reviewerBinding:config[executionRoute(t).reviewer]});
+export async function loadReviewSource(packetDir,r){
+  if(!/^[a-f0-9-]{36}\/review-source\.json$/.test(r?.source_file??''))return null;
+  try{
+    const {lstat}=await import('node:fs/promises');const file=path.join(packetDir,r.source_file);
+    const parent=await lstat(path.dirname(file)),info=await lstat(file);
+    if(parent.isSymbolicLink()||!parent.isDirectory()||info.isSymbolicLink()||!info.isFile()||info.size>512*1024)return null;
+    return await readJson(file);
+  }catch(e){if(e.code==='ENOENT'||e instanceof SyntaxError)return null;throw e;}
+}
+async function boundReadiness(t,e,r,config,packetDir){
+  return readiness(t,e,r,{reviewerBinding:config[executionRoute(t).reviewer],sourceSnapshot:await loadReviewSource(packetDir,r),sourceConfigHash:configHash(config)});
 }
 async function bridgeHash(){return hash(await Promise.all(['bridge.mjs','bridge-adapters.mjs','bridge-process.mjs','workflow.mjs','redact.mjs'].map(f=>readFile(new URL(f,import.meta.url),'utf8'))));}
 export async function acquire(cwd) {
@@ -104,7 +113,7 @@ async function acceptedPilot(config,pilotDir,{requirePilotCheckout=true}={}) {
   const t=await readJson(s.task_path);await assertContract(s.task_path,t);
   required(t.candidate_head===s.head&&t.contract_sha256===s.contract_sha256,'pilot task does not match checkpoint');
   if(requirePilotCheckout)cleanHead(s.cwd,s.head);
-  const ready=boundReadiness(t,await readJson(path.join(pilotDir,'evidence.json')),await readJson(path.join(pilotDir,'review.json')),config);
+  const ready=await boundReadiness(t,await readJson(path.join(pilotDir,'evidence.json')),await readJson(path.join(pilotDir,'review.json')),config,pilotDir);
   required(['READY_FOR_OWNER','DONE'].includes(ready.status),'pilot evidence/review no longer current');
   return {s,t,pilotDir:path.resolve(pilotDir),pilot_digest:hash(s),config_hash:configHash(config),bridge_hash:await bridgeHash()};
 }
@@ -228,7 +237,7 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
       if(['DONE','READY_FOR_OWNER'].includes(state.status)){
         const optional=async file=>{try{return await readJson(file);}catch(e){if(e.code==='ENOENT')return null;throw e;}};
         const review=await optional(path.join(packetDir,'review.json'));
-        const ready=boundReadiness(t,await optional(path.join(packetDir,'evidence.json')),review,config);
+        const ready=await boundReadiness(t,await optional(path.join(packetDir,'evidence.json')),review,config,packetDir);
         state.status=ready.status;state.error=ready.reason??null;
         if(ready.status==='NEEDS_FIX'){
           if(review?.head===t.candidate_head&&review.contract_sha256===t.contract_sha256&&Array.isArray(review.material_findings)&&review.material_findings.length){state.phase='repair';state.feedback=review;}
@@ -250,7 +259,7 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
     if(resume&&state.phase==='reviewer'&&state.status==='WAITING_CAPABILITY'){
       const review=await readJson(path.join(packetDir,'review.json')).catch(e=>{if(e.code==='ENOENT')return null;throw e;});
       const evidence=await readJson(path.join(packetDir,'evidence.json')).catch(e=>{if(e.code==='ENOENT')return null;throw e;});
-      const ready=boundReadiness(t,evidence,review,config);
+      const ready=await boundReadiness(t,evidence,review,config,packetDir);
       if(['DONE','READY_FOR_OWNER'].includes(ready.status)||ready.reason==='current local browser evidence needed'){state.status=ready.status;await save();return state;}
       if(review?.head===t.candidate_head&&review.contract_sha256===t.contract_sha256&&Array.isArray(review.material_findings)&&review.material_findings.length){state.phase='repair';state.feedback=review;await save();}
       else if(ready.status==='NEEDS_FIX'&&!ready.reason?.startsWith('review')){state.phase='gates';await save();}
@@ -339,10 +348,10 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
         const identity=`${config[tier].provider}:${result.session_id}`;
         required(!t.implementer_sessions.includes(identity)&&!t.execution?.design_sessions.includes(identity),'reviewer session is not independent');
         const review={schema_version:'qq.workflow.review.v10',task_id:t.task_id,revision:t.revision,head:state.head,contract_sha256:t.contract_sha256,
-          reviewer_session:identity,independent:true,effective_risk:t.effective_risk,reviewer_tier:tier,reviewer_binding_hash:hash(config[tier]),source_sha256:hash(source),...result.result};
+          ...result.result,reviewer_session:identity,independent:true,effective_risk:t.effective_risk,reviewer_tier:tier,reviewer_binding_hash:hash(config[tier]),source_sha256:hash(source),source_file:state.in_flight.id+'/review-source.json'};
         await atomicJson(path.join(packetDir,'review.json'),review);
         state.feedback=review;
-        const ready=boundReadiness(t,await readJson(path.join(packetDir,'evidence.json')),review,config);
+        const ready=await boundReadiness(t,await readJson(path.join(packetDir,'evidence.json')),review,config,packetDir);
         if(['DONE','READY_FOR_OWNER'].includes(ready.status)){state.unresolved_review=null;state.status=ready.status;state.in_flight=null;await save();return state;}
         if(ready.status==='WAITING_CAPABILITY'){if(ready.reason==='current local browser evidence needed')state.unresolved_review=null;state.status=ready.status;state.in_flight=null;state.error=ready.reason;await save();return state;}
         state.phase='repair';
