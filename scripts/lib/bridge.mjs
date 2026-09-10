@@ -168,6 +168,7 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
       required(state.cwd===cwd&&state.task_path===taskPath&&state.contract_sha256===t.contract_sha256&&state.config_hash===configHash(config)&&state.bridge_hash===await bridgeHash(),'checkpoint/config mismatch');
       required(!state.in_flight&&!state.reconciliation_required,'unknown operation: Lead reconciliation required; never replay automatically');
       required(state.head===cp.head&&state.branch===cp.branch,'checkpoint candidate changed');
+      required(t.candidate_head===state.head||(t.candidate_head===null&&state.phase==='worker'&&state.history.length===0),'task candidate does not match checkpoint head');
       if(state.status==='BLOCKED_TECHNICAL')return state;
       if(['DONE','READY_FOR_OWNER'].includes(state.status)){
         const optional=async file=>{try{return await readJson(file);}catch(e){if(e.code==='ENOENT')return null;throw e;}};
@@ -231,9 +232,15 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
       const decision=executionRoute(t,{executing:true}),tier=role==='reviewer'?decision.reviewer:decision.worker;
       if(role==='reviewer'&&state.unresolved_review)required(state.head!==state.unresolved_review.head&&git(cwd,'rev-parse','HEAD^{tree}').trim()!==state.unresolved_review.tree,'unresolved findings require an actual repair before another review');
       if(!config[tier]){state.status='WAITING_CAPABILITY';state.in_flight=null;state.error='Missing configured '+tier;await save();return state;}
+      let feedback=state.feedback;
+      if(role==='reviewer'){
+        const evidence=await readJson(path.join(packetDir,'evidence.json')).catch(e=>{if(e.code==='ENOENT')return null;throw e;});
+        if(readiness(t,evidence,null).reason!=='independent review needed'){state.phase='gates';state.in_flight=null;await save();continue;}
+        feedback={evidence,material_findings:state.unresolved_review?.review.material_findings??state.feedback?.material_findings??[]};
+      }
       const source=role==='reviewer'?reviewSource(cwd,t,config):null;
       const result=await invoke(config[tier],{cwd,packetDir:path.join(packetDir,state.in_flight.id),role,
-        prompt:promptFor(role,t,state.feedback,source),timeoutSeconds:config.timeout_seconds,signal});
+        prompt:promptFor(role,t,feedback,source),timeoutSeconds:config.timeout_seconds,signal});
       state.history.push({phase:role,tier,head_before:state.head,contract_sha256:t.contract_sha256,...(source?{source_sha256:hash(source)}:{}),...result});
       // Process failure may occur after writes: preserve the in-flight marker,
       // counters and dirty tree, even for a quota/auth error or malformed JSON.

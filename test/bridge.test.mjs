@@ -19,6 +19,7 @@ if(args.includes('--version')){console.log('fake-cli 1.0');process.exit(0);}
 if(args.includes('login')){console.log('Logged in using ChatGPT');process.exit(0);}
 let input='';for await(const c of process.stdin)input+=c;
 const probe=input.includes('Capability probe'),worker=args.includes('workspace-write');
+if(!probe&&!worker)writeFileSync(${JSON.stringify(path.join(f.dir,'review-input.txt'))},input);
 if(!probe&&mode==='quota'){console.error('429 quota exhausted');process.exit(1);}
 if(!probe&&mode==='timeout'){setInterval(()=>{},1000);await new Promise(()=>{});}
 if(!probe&&mode==='invalid'){console.log('not JSON');process.exit(0);}
@@ -75,6 +76,20 @@ test('cached readiness is invalidated when independent review is removed',async(
   await unlink(path.join(f.packetDir,'review.json'));
   assert.equal((await f.run({resume:true})).status,'WAITING_CAPABILITY');
   assert.equal((await f.run({resume:true})).status,'READY_FOR_OWNER');
+  const prompt=await readFile(path.join(f.dir,'review-input.txt'),'utf8');
+  const payload=JSON.parse(prompt.split('\n').find(line=>line.startsWith('Previous findings and evidence: ')).slice('Previous findings and evidence: '.length));
+  assert.equal(payload.evidence.status,'PASS');assert.equal(payload.evidence.head,git(f.repo,'rev-parse','HEAD').trim());
+ }finally{await f.cleanup();}
+});
+
+test('restoring older matching task and evidence packets cannot approve a newer checkpoint',async()=>{
+ const f=await setup('pass');try{
+  await f.run();const oldTask=await readJson(f.taskPath),ep=path.join(f.packetDir,'evidence.json'),rp=path.join(f.packetDir,'review.json');
+  const oldEvidence=await readJson(ep),oldReview=await readJson(rp);
+  await writeJson(rp,{...oldReview,verdict:'NEEDS_FIX',material_findings:['fix the fixture']});
+  await f.run({resume:true});const fixed=await f.run({resume:true});assert.equal(fixed.status,'READY_FOR_OWNER');assert.notEqual(fixed.head,oldTask.candidate_head);
+  await writeJson(f.taskPath,oldTask);await writeJson(ep,oldEvidence);await writeJson(rp,oldReview);
+  const restored=await f.run({resume:true});assert.equal(restored.status,'BLOCKED_TECHNICAL');assert.match(restored.error,/task candidate/);
  }finally{await f.cleanup();}
 });
 
