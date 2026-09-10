@@ -70,7 +70,7 @@ function transientOpenAITransportEvent(event) {
 }
 
 export function parseProtocol(provider,stdout,cli='gemini',{capabilityProbe=false}={}) {
-  let session,models=[],body;
+  let session,models=[],body,usage=null;
   if(provider==='openai') {
     const events=stdout.trim().split(/\r?\n/).map(line=>JSON.parse(line));
     const starts=events.filter(e=>e.type==='thread.started');
@@ -80,6 +80,7 @@ export function parseProtocol(provider,stdout,cli='gemini',{capabilityProbe=fals
     const messages=events.filter(e=>e.type==='item.completed'&&e.item?.type==='agent_message');
     body=messages.at(-1)?.item.text;
     models=[...new Set(events.flatMap(e=>e.model?[e.model]:[]))];
+    usage=events.filter(e=>e.type==='turn.completed').at(-1)?.usage??null;
   } else if(cli==='antigravity') {
     const events=stdout.trim().split(/\r?\n/).map(line=>JSON.parse(line));
     const results=events.filter(e=>e.event==='result');
@@ -96,13 +97,13 @@ export function parseProtocol(provider,stdout,cli='gemini',{capabilityProbe=fals
   if(!result||!['PASS','NEEDS_FIX','BLOCKED'].includes(result.verdict)||typeof result.summary!=='string'||
     !Array.isArray(result.material_findings)||!result.material_findings.every(x=>typeof x==='string')||typeof result.risk_checks_completed!=='boolean'||
     (result.verdict==='PASS'&&result.material_findings.length&&!capabilityProbe))throw Error('invalid structured result');
-  return safe({session_id:session,observed_models:models,result});
+  return safe({session_id:session,observed_models:models,usage,result});
 }
 
 export async function invoke(binding,options) {
   const spec=await invocation(binding,options);
   const r=await execute(spec.argv,{...spec,cwd:options.cwd,timeoutSeconds:options.timeoutSeconds,signal:options.signal});
-  const record=safe({provider:binding.provider,requested_model:binding.model,argv:spec.argv,code:r.code,reason:r.reason,
+  const record=safe({provider:binding.provider,requested_model:binding.model,requested_effort:binding.effort??null,argv:spec.argv,code:r.code,reason:r.reason,
     started_at:r.started_at,finished_at:r.finished_at,status:failureStatus(r)});
   Object.assign(record,protocolMetadata(binding.provider,r.stdout,binding.cli??'antigravity'));
   if(!record.status&&record.denied_actions?.length){record.status='WAITING_CAPABILITY';record.reason='TOOL_PERMISSION_DENIED';}

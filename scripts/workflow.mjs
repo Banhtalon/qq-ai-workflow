@@ -22,7 +22,8 @@ try{
   }else if(command==="status"&&args.length===4){
     const t=await readJson(args[0]);await assertContract(args[0],t);cleanHead(args[3],t.candidate_head);
     const optional=async p=>{try{return await readJson(p);}catch(e){if(e.code==="ENOENT")return null;throw e;}};
-    result=readiness(t,await optional(args[1]),await optional(args[2]));
+    result={...readiness(t,await optional(args[1]),await optional(args[2])),task_id:t.task_id,head:t.candidate_head,
+      goal:t.goal,local_url:t.ui_evidence?.head===t.candidate_head&&t.ui_evidence?.contract_sha256===t.contract_sha256?t.ui_evidence.url:null};
     if(!["DONE","READY_FOR_OWNER"].includes(result.status))process.exitCode=1;
   }else{
     console.log("freeze <task> | route <task> <profile> | verify <task> <repo> <evidence> | status <task> <evidence> <review> <repo>");

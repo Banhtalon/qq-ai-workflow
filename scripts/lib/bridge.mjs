@@ -1,7 +1,7 @@
 import path from 'node:path';
 import {mkdir,open,readFile,rename,unlink} from 'node:fs/promises';
 import {randomUUID,createHash} from 'node:crypto';
-import {git,cleanHead,readJson,writeJson,assertContract,verify,readiness} from './workflow.mjs';
+import {git,cleanHead,readJson,writeJson,assertContract,verify,readiness,executionRoute} from './workflow.mjs';
 import {invoke,doctor,validateBinding} from './bridge-adapters.mjs';
 import {safe} from './bridge-process.mjs';
 import {redactText} from './redact.mjs';
@@ -20,6 +20,7 @@ export function validateConfig(c) {
   required(Array.isArray(c.write_paths)&&c.write_paths.length>0&&c.write_paths.every(p=>typeof p==='string'&&p&&!path.isAbsolute(p)&&!p.includes('\\')&&!p.split('/').some(s=>['..','.',''].includes(s))),'explicit relative write_paths required');
   required(Array.isArray(c.gate_paths)&&c.gate_paths.every(p=>typeof p==='string'&&p&&!path.isAbsolute(p)&&!p.includes('\\')&&!p.split('/').some(s=>['..','.',''].includes(s))),'explicit gate_paths required, including indirect gate dependencies');
   for(const role of ['worker','reviewer','senior'])validateBinding(c[role]);
+  if(c.elevated_reviewer){validateBinding(c.elevated_reviewer);required(c.elevated_reviewer.provider==='openai'||c.elevated_reviewer.cli==='gemini','elevated reviewer must support read-only execution');}
   required(c.reviewer.provider==='openai'||c.reviewer.cli==='gemini','Antigravity supports worker only; configure a read-only Codex reviewer');
   return c;
 }
@@ -36,7 +37,7 @@ export async function acquire(cwd) {
 }
 export async function inspect(cwd,config,packetDir,probe=false,signal) {
   validateConfig(config);const head=cleanHead(cwd);const reports=[];
-  for(const role of ['worker','reviewer','senior']){
+  for(const role of ['worker','reviewer','senior',...(config.elevated_reviewer?['elevated_reviewer']:[])]){
     const report=await doctor(config[role],{cwd,packetDir:path.join(packetDir,role),probe,signal});
     cleanHead(cwd,head);reports.push({role,...report});
   }
@@ -150,6 +151,7 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
   const save=()=>atomicJson(statePath,state);
   try {
     let t=await readJson(taskPath);await assertContract(taskPath,t);
+    if(t.execution?.policy==='GEMINI_FIRST_V1'&&!config.elevated_reviewer)return {status:'WAITING_CAPABILITY',error:'Gemini-first requires elevated reviewer binding before checkpoint creation',history:[]};
     const cp=checkpoint(cwd);
     if(!pilot){
       required(config.mode==='LOCAL_AUTO','ASSISTED: use the explicit pilot command until real Windows acceptance');
@@ -173,6 +175,11 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
         contract_sha256:t.contract_sha256,config_hash:configHash(config),bridge_hash:await bridgeHash(),base_sha:t.base_sha,...cp,status:'STARTING',phase:'worker',
         repair_rounds:0,senior_passes:0,history:[],capability_history:[],feedback:null,in_flight:null,reconciliation_required:false};
       await save();
+    }
+    if(!config[executionRoute(t).reviewer]){state.status='WAITING_CAPABILITY';state.error='required reviewer binding missing';await save();return state;}
+    if(resume&&state.phase==='reviewer'&&state.status==='WAITING_CAPABILITY'){
+      const ready=readiness(t,await readJson(path.join(packetDir,'evidence.json')),await readJson(path.join(packetDir,'review.json')).catch(()=>null));
+      if(['DONE','READY_FOR_OWNER'].includes(ready.status)||ready.reason==='current local browser evidence needed'){state.status=ready.status;await save();return state;}
     }
     // No writer starts until all configured subscription accounts/models answer.
     const capability=await inspect(cwd,config,path.join(packetDir,'capabilities'),true,signal);
@@ -200,7 +207,8 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
         t.repair_rounds=state.repair_rounds;t.senior_passes=state.senior_passes;await writeJson(taskPath,t);
         state.phase='worker';await save();continue;
       }
-      const tier=role==='reviewer'?'reviewer':state.senior_passes||t.risk==='ELEVATED'||t.effective_risk==='ELEVATED'||t.complexity==='COMPLEX'?'senior':'worker';
+      const decision=executionRoute(t,{executing:true}),tier=role==='reviewer'?decision.reviewer:decision.worker;
+      if(!config[tier]){state.status='WAITING_CAPABILITY';state.in_flight=null;state.error='Missing configured '+tier;await save();return state;}
       const source=role==='reviewer'?reviewSource(cwd,t,config):null;
       const result=await invoke(config[tier],{cwd,packetDir:path.join(packetDir,state.in_flight.id),role,
         prompt:promptFor(role,t,state.feedback,source),timeoutSeconds:config.timeout_seconds,signal});
@@ -234,13 +242,14 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
       } else {
         cleanHead(cwd,state.head);
         const identity=`${config[tier].provider}:${result.session_id}`;
-        required(!t.implementer_sessions.includes(identity),'reviewer session is not independent');
+        required(!t.implementer_sessions.includes(identity)&&!t.execution?.design_sessions.includes(identity),'reviewer session is not independent');
         const review={schema_version:'qq.workflow.review.v10',task_id:t.task_id,revision:t.revision,head:state.head,contract_sha256:t.contract_sha256,
           reviewer_session:identity,independent:true,...result.result};
         await atomicJson(path.join(packetDir,'review.json'),review);
         state.feedback=review;
         const ready=readiness(t,await readJson(path.join(packetDir,'evidence.json')),review);
         if(['DONE','READY_FOR_OWNER'].includes(ready.status)){state.status=ready.status;state.in_flight=null;await save();return state;}
+        if(ready.status==='WAITING_CAPABILITY'){state.status=ready.status;state.in_flight=null;state.error=ready.reason;await save();return state;}
         state.phase='repair';
       }
       state.in_flight=null;await save();

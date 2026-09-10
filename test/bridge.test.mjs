@@ -49,9 +49,37 @@ test('real subprocess worker -> gates -> independent review -> repair -> final r
     assert.equal((await f.run({resume:true})).status,'READY_FOR_OWNER');
   }finally{await f.cleanup();}
 });
+
+test('Gemini-first elevated bridge uses worker and elevated reviewer; browser wait resumes without another model call',async()=>{
+ const f=await setup('pass');try{
+  const t=await readJson(f.taskPath);t.task_id='TASK-GEMINI-BROWSER';t.risk='ELEVATED';t.complexity='COMPLEX';
+  t.execution={policy:'GEMINI_FIRST_V1',prepared:true,local_synthetic:true,rationale:'Local fixture with fixed design',design_sessions:[],browser_required:true};
+  const taskPath=path.join(f.dir,'modern.json');await writeJson(taskPath,t);await freeze(taskPath);
+  const config={...f.config,elevated_reviewer:{...f.config.reviewer,model:'elevated-fixture'}};
+  const run=()=>runBridge({cwd:f.repo,taskPath,config,packetDir:f.packetDir,pilot:true});
+  const s=await run();assert.equal(s.status,'WAITING_CAPABILITY');assert.equal(s.repair_rounds,0);
+  assert.deepEqual(s.history.filter(h=>h.session_id).map(h=>h.tier),['worker','elevated_reviewer']);
+  const pending=await runBridge({cwd:f.repo,taskPath,config,packetDir:f.packetDir,pilot:true,resume:true});
+  assert.equal(pending.history.length,s.history.length);
+  const updated=await readJson(taskPath);updated.ui_evidence={head:updated.candidate_head,contract_sha256:updated.contract_sha256,url:'http://localhost:3000',status:'PASS',checks:[{action:'Open',observed:'Expected page',passed:true}]};await writeJson(taskPath,updated);
+  const final=await runBridge({cwd:f.repo,taskPath,config,packetDir:f.packetDir,pilot:true,resume:true});
+  assert.equal(final.status,'READY_FOR_OWNER');assert.equal(final.history.length,s.history.length);
+ }finally{await f.cleanup();}
+});
+
+test('missing elevated reviewer stops before any writer call',async()=>{
+ const f=await setup('pass');try{
+  const t=await readJson(f.taskPath);t.task_id='TASK-MISSING-REVIEWER';t.risk='ELEVATED';
+  t.execution={policy:'GEMINI_FIRST_V1',prepared:true,local_synthetic:true,rationale:'Local fixture',design_sessions:[],browser_required:false};
+  const taskPath=path.join(f.dir,'modern.json');await writeJson(taskPath,t);await freeze(taskPath);
+  const s=await runBridge({cwd:f.repo,taskPath,config:f.config,packetDir:f.packetDir,pilot:true});
+  assert.equal(s.status,'WAITING_CAPABILITY');assert.equal(s.history.length,0);
+ }finally{await f.cleanup();}
+});
 test('repair budget persists: two repairs, one senior pass, then stop',async()=>{
   const f=await setup('always-fail');try{
     const s=await f.run();assert.equal(s.status,'BLOCKED_TECHNICAL');assert.equal(s.repair_rounds,2);assert.equal(s.senior_passes,1);
+    assert.deepEqual(s.history.filter(h=>h.phase==='worker').map(h=>h.tier),['worker','worker','worker','senior']);
     assert.equal(s.history.filter(h=>h.phase==='worker').length,4);
     assert.equal((await f.run({resume:true})).history.length,s.history.length);
   }finally{await f.cleanup();}

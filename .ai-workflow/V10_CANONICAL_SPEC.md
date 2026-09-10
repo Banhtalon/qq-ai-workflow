@@ -25,7 +25,7 @@ LEAD: single contact; reads current files/state, plans briefly, classifies risk,
 chooses implementer, operates tools, may code, collects evidence, coordinates repair.
 IMPLEMENTER: one bounded feature; no self-approval, no scope/gate changes.
 REVIEWER: fresh independent session, not involved in any implementation of the
-feature; assess contract, diff, tests and risk against exact head and contract hash.
+feature (including its design); assess contract, diff, tests and risk against exact head and contract hash.
 Different provider preferred; a fresh separate session on the same model is allowed
 when competent. Identity is recorded, not authenticated by this local kit.
 
@@ -38,7 +38,8 @@ when competent. Identity is recorded, not authenticated by this local kit.
 5. At feature completion, commit code, inspect actual diff, run agreed final gates.
 6. Reviewer checks that head. Material issues go directly to implementer.
 7. Rerun affected checks; refresh final evidence and review for the final head.
-8. Present a local build with 3–5 ordinary user actions. Record Owner acceptance.
+8. Present a local build with 1–3 ordinary user actions for small changes, more when
+   needed to cover the behavior. Record Owner acceptance from the Lead chat.
 9. Completion requires evidence, independent PASS, and acceptance if user-visible.
    Merge/publish remains a separate explicitly authorized action.
 
@@ -50,6 +51,23 @@ path heuristics alone cannot certify safety. Risk cannot decrease within a revis
 Simple low-risk work: configured fast implementer, normally Gemini Flash.
 Complex or elevated work: configured senior-capable agent; independent competent
 reviewer. Model IDs/effort must be discovered and tested on the Owner's account.
+These defaults remain in force for existing frozen tasks. A new contract may opt
+into `execution.policy=GEMINI_FIRST_V1`. Its `prepared`, `local_synthetic`,
+`rationale`, `design_sessions` and `browser_required` fields are frozen with it.
+Lead inspects actual code before setting prepared; it means the implementation
+approach, scope and checks are settled. Prepared work uses the worker by default,
+including complex work; elevated work additionally requires local synthetic data.
+Unprepared complex/elevated work uses senior. Elevated tasks in this policy require
+an explicitly configured elevated reviewer, never a silent ordinary-review fallback.
+Gemini-first bridge configurations include that reviewer even for initially LOW
+tasks so later risk elevation does not require changing the checkpoint configuration.
+Design participants cannot review that feature. Lead may obtain at most one senior
+design consultation before freezing the contract and records its session identity;
+consultation does not reset or extend implementation repair budgets. Missing design
+decisions after that consultation are a technical blocker or a product question.
+The intended account profile is Sol Medium Lead, Gemini Flash High worker, Astra
+senior, Terra Xhigh ordinary reviewer and independent Astra elevated reviewer.
+Names are preferences, not capability evidence; CLI IDs and effort require probes.
 Two repair rounds at the initial tier, then at most one senior implementation pass.
 Any unresolved material failure after that => BLOCKED_TECHNICAL, preserved checkpoint.
 A reviewer finding causes repair, not a debate loop. A new scope revision must not
@@ -65,6 +83,15 @@ output. A process exit 0 alone is not product acceptance. Review and Owner accep
 bind to the same head/hash. A later edit invalidates them.
 An elevated-risk review records completed risk checks and their result in its summary.
 Fresh-context review is organizational independence, not OS-level isolation.
+For Gemini-first user-visible tasks with browser_required, readiness also requires
+ui_evidence containing matching head/contract hash, a localhost URL, PASS status
+and nonempty checks with action, observed result and passed=true. Missing evidence
+is WAITING_CAPABILITY, not a repair request or Owner acceptance. Lead verifies the
+running build and records actual browser observations; JSON alone is not proof.
+Owner sees the local link, short steps and status in Lead chat, never a requirement
+to inspect code/SQL/logs. UI changes invalidate old UI evidence with the head.
+Usage records retain provider-reported counters or null when unavailable; API price
+does not establish subscription quota. Full redacted gate evidence remains available.
 The packet checker cannot prove a human/model identity, detect fabricated JSON,
 or enforce all transitions. Lead must retain genuine execution/review records.
 

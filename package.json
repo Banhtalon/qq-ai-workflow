@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test test/workflow.test.mjs test/bridge.test.mjs test/fast-lane.test.mjs test/documentation.test.mjs",
+    "test": "node --test test/workflow.test.mjs test/bridge.test.mjs test/fast-lane.test.mjs test/documentation.test.mjs test/gemini-first.test.mjs",
     "bridge": "node scripts/bridge.mjs",
     "fast-lane": "node scripts/fast-lane.mjs",
     "workflow:check": "node scripts/check-kit.mjs",
