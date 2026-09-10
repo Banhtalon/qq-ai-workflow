@@ -11,6 +11,7 @@ export const readJson=async p=>JSON.parse(await readFile(p,"utf8"));
 export const writeJson=(p,v,flag="w")=>writeFile(p,JSON.stringify(v,null,2)+"\n",{flag});
 export function contract(t){
   const keys=["schema_version","task_id","revision","base_sha","goal","acceptance_criteria","gates","user_visible","risk","complexity"];
+  if(t.execution!==undefined)keys.push('execution');
   return Object.fromEntries(keys.map(k=>[k,t[k]]));
 }
 export const contractHash=t=>digest(contract(t));
@@ -45,14 +46,29 @@ export function validateTask(t){
   for(const k of ["repair_rounds","senior_passes"]) required(Number.isInteger(t[k])&&t[k]>=0,"invalid "+k);
   required(t.repair_rounds<=2&&t.senior_passes<=1,"repair budget exceeded");
   required(Array.isArray(t.implementer_sessions)&&t.implementer_sessions.every(text),"invalid implementer sessions");
+  if(t.execution!==undefined){
+    const x=t.execution;
+    required(x?.policy==='GEMINI_FIRST_V1'&&typeof x.prepared==='boolean'&&typeof x.local_synthetic==='boolean'&&text(x.rationale),'invalid execution contract');
+    required(Array.isArray(x.design_sessions)&&x.design_sessions.every(text),'invalid design sessions');
+    required(typeof x.browser_required==='boolean','invalid browser requirement');
+    if(x.source_approvals_sha256!==undefined)required(/^[a-f0-9]{64}$/.test(x.source_approvals_sha256),'invalid source approvals digest');
+    if(x.review_source_required!==undefined)required(typeof x.review_source_required==='boolean','invalid source requirement');
+  }
   return t;
+}
+export const elevated=t=>t.risk==='ELEVATED'||t.effective_risk==='ELEVATED';
+export function executionRoute(t,{executing=false}={}){
+  const modern=t.execution?.policy==='GEMINI_FIRST_V1';
+  const prepared=modern&&t.execution.prepared&&(!elevated(t)||t.execution.local_synthetic);
+  return {worker:t.senior_passes>=1||(!executing&&t.repair_rounds>=2)||(!prepared&&(elevated(t)||t.complexity==='COMPLEX'))?'senior':'worker',
+    reviewer:modern&&elevated(t)?'elevated_reviewer':'reviewer'};
 }
 export function validateProfile(p){
   required(p?.schema_version==="qq.workflow.profile.v10","unsupported profile");
   required(p.billing==="SUBSCRIPTION_ONLY","paid fallback is not allowed");
   required(p.routing_mode==="ASSISTED"&&p.bridge_installed===false,"LOCAL_AUTO requires the separate tested bridge; not shipped");
   required(p.max_repairs===2&&p.max_senior_passes===1&&p.max_writers===1,"unsupported budget/concurrency");
-  for(const role of ["fast","senior","review"]){
+  for(const role of ["fast","senior","review",...(p.bindings?.elevated_review?['elevated_review']:[])]){
     const b=p.bindings?.[role];
     required(b&&["google","openai"].includes(b.provider)&&typeof b.verified==="boolean","invalid binding");
     required(!b.verified||text(b.model),"verified binding requires model");
@@ -63,7 +79,8 @@ export function route(t,p,{quotaAvailable=true,needsRepair=false}={}){
   validateTask(t);validateProfile(p);
   if(needsRepair&&t.senior_passes>=1) return {status:"BLOCKED_TECHNICAL",reason:"senior repair exhausted"};
   if(!quotaAvailable)return {status:"WAITING_QUOTA",reason:"preserve counters; no paid fallback"};
-  const tier=t.risk==="ELEVATED"||t.effective_risk==="ELEVATED"||t.complexity==="COMPLEX"||t.repair_rounds>=2?"senior":"fast";
+  const decision=executionRoute(t),tier=decision.worker==='worker'?'fast':'senior';
+  if(decision.reviewer==='elevated_reviewer'&&!p.bindings.elevated_review?.verified)return {status:'WAITING_CAPABILITY',reason:'elevated reviewer not verified'};
   const binding=p.bindings[tier];
   if(!binding.verified)return {status:"WAITING_CAPABILITY",tier,reason:"account/model not verified"};
   return {status:"ROUTE_PROPOSED",tier,binding,invoked:false};
@@ -122,7 +139,7 @@ export async function verify(taskPath,cwd,{signal}={}){
     effective_risk:t.effective_risk,recorded_at:new Date().toISOString(),
     status:results.length===t.gates.length&&results.every(g=>g.code===0&&!g.timed_out)?"PASS":"FAIL",gates:results};
 }
-export function readiness(t,e,r){
+export function readiness(t,e,r,{reviewerBinding,sourceSnapshot,sourceConfigHash}={}){
   validateTask(t);
   const wait=reason=>({status:"NEEDS_FIX",reason});
   if(!sha(t.candidate_head)||t.contract_sha256!==contractHash(t)||!["LOW","ELEVATED"].includes(t.effective_risk))return wait("contract/head invalid");
@@ -137,15 +154,31 @@ export function readiness(t,e,r){
       b.code!==0||b.timed_out!==false||b.redaction_applied!==true)return wait("required gate not passed");
   }
   if(!r)return {status:"WAITING_CAPABILITY",reason:"independent review needed"};
+  if(t.execution?.policy==='GEMINI_FIRST_V1'){
+    if(!reviewerBinding||!['google','openai'].includes(reviewerBinding.provider)||!text(reviewerBinding.model))return {status:'WAITING_CAPABILITY',reason:'expected reviewer binding required'};
+    if(r.reviewer_binding_hash!==digest(reviewerBinding))return wait('review binding is stale');
+  }
+  if(t.execution?.policy==='GEMINI_FIRST_V1'&&(r.effective_risk!==t.effective_risk||r.reviewer_tier!==executionRoute(t).reviewer))return wait('review risk or tier is stale');
   if(r.schema_version!=="qq.workflow.review.v10"||r.task_id!==t.task_id||r.revision!==t.revision||
     r.head!==t.candidate_head||r.contract_sha256!==t.contract_sha256||r.independent!==true||
-    !text(r.reviewer_session)||t.implementer_sessions.includes(r.reviewer_session))
+    !text(r.reviewer_session)||t.implementer_sessions.includes(r.reviewer_session)||t.execution?.design_sessions.includes(r.reviewer_session))
     return wait("review is stale or not independent");
+  if(r.source_sha256!==undefined||r.source_file!==undefined||t.execution?.review_source_required){
+    if(!/^[a-f0-9]{64}$/.test(r.source_sha256??'')||!text(r.source_file)||!sourceSnapshot||digest(sourceSnapshot)!==r.source_sha256||
+      sourceSnapshot.schema_version!=='qq.bridge.review-source.v1'||sourceSnapshot.task_id!==t.task_id||sourceSnapshot.revision!==t.revision||sourceSnapshot.base!==t.base_sha||sourceSnapshot.head!==t.candidate_head||sourceSnapshot.contract_sha256!==t.contract_sha256||!sourceConfigHash||sourceSnapshot.config_hash!==sourceConfigHash)return wait('review source is missing or stale');
+  }
   if(r.verdict!=="PASS"||!Array.isArray(r.material_findings)||r.material_findings.length>0)
     return wait("review has unresolved findings");
   if((t.risk==="ELEVATED"||t.effective_risk==="ELEVATED"||e.effective_risk==="ELEVATED")&&r.risk_checks_completed!==true)
     return wait("elevated risk review missing");
   if(!t.user_visible)return {status:"DONE",merge_authorized:false};
+  if(t.execution?.browser_required){
+    const ui=t.ui_evidence;
+    if(!ui||ui.head!==t.candidate_head||ui.contract_sha256!==t.contract_sha256||ui.status!=='PASS'||
+      !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/.test(ui.url??'')||
+      !Array.isArray(ui.checks)||!ui.checks.length||!ui.checks.every(c=>text(c.action)&&text(c.observed)&&c.passed===true))
+      return {status:'WAITING_CAPABILITY',reason:'current local browser evidence needed'};
+  }
   const a=t.owner_acceptance;
   if(a?.accepted===true&&a.head===t.candidate_head&&a.contract_sha256===t.contract_sha256&&text(a.source))
     return {status:"DONE",merge_authorized:false};

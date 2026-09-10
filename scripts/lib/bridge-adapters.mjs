@@ -63,43 +63,53 @@ export function protocolMetadata(provider,stdout,cli) {
   return safe({...(typeof session==='string'&&session?{session_id:session}:{}),...(denied.length?{denied_actions:denied}:{})});
 }
 
-export function parseProtocol(provider,stdout,cli='gemini') {
-  let session,models=[],body;
+function transientOpenAITransportEvent(event) {
+  if(event.type!=='error')return false;
+  const message=event.message??event.error?.message??'';
+  return /^Reconnecting\.\.\. \d+\/\d+ \(/.test(message)||/^Falling back from WebSockets to HTTPS transport\./.test(message);
+}
+
+export function parseProtocol(provider,stdout,cli='gemini',{capabilityProbe=false}={}) {
+  let session,models=[],body,usage=null;
   if(provider==='openai') {
     const events=stdout.trim().split(/\r?\n/).map(line=>JSON.parse(line));
     const starts=events.filter(e=>e.type==='thread.started');
-    if(starts.length!==1||!events.some(e=>e.type==='turn.completed')||events.some(e=>['error','turn.failed'].includes(e.type)))throw Error('incomplete Codex protocol');
+    const completed=events.findLastIndex(e=>e.type==='turn.completed'),lastTransient=events.findLastIndex(transientOpenAITransportEvent);
+    if(starts.length!==1||completed<0||lastTransient>=completed||events.some(e=>e.type==='turn.failed'||(e.type==='error'&&!transientOpenAITransportEvent(e))))throw Error('incomplete Codex protocol');
     session=starts[0].thread_id;
     const messages=events.filter(e=>e.type==='item.completed'&&e.item?.type==='agent_message');
     body=messages.at(-1)?.item.text;
     models=[...new Set(events.flatMap(e=>e.model?[e.model]:[]))];
+    usage=events.filter(e=>e.type==='turn.completed').at(-1)?.usage??null;
   } else if(cli==='antigravity') {
     const events=stdout.trim().split(/\r?\n/).map(line=>JSON.parse(line));
     const results=events.filter(e=>e.event==='result');
     if(results.length!==1||results[0].result?.status!=='SUCCESS')throw Error('incomplete Antigravity protocol');
     const response=results[0].result;session=response.conversation_id;
+    usage=response.usage??response.stats??null;
     models=[...new Set(events.flatMap(e=>e.init?.model?[e.init.model]:[]))];
     body=response.structured_output?JSON.stringify(response.structured_output):response.response;
   } else {
     const response=JSON.parse(stdout);if(response.error)throw Error('Gemini protocol error');
-    session=response.session_id;models=Object.keys(response.stats?.models??{});body=response.response;
+    session=response.session_id;models=Object.keys(response.stats?.models??{});body=response.response;usage=response.usage??response.stats??null;
   }
   if(typeof session!=='string'||!session.trim()||typeof body!=='string')throw Error('missing session or structured response');
   const result=JSON.parse(body.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, ''));
+  if(result&&Object.keys(result).some(k=>!['verdict','summary','material_findings','risk_checks_completed'].includes(k)))throw Error('unexpected structured result field');
   if(!result||!['PASS','NEEDS_FIX','BLOCKED'].includes(result.verdict)||typeof result.summary!=='string'||
     !Array.isArray(result.material_findings)||!result.material_findings.every(x=>typeof x==='string')||typeof result.risk_checks_completed!=='boolean'||
-    (result.verdict==='PASS'&&result.material_findings.length))throw Error('invalid structured result');
-  return safe({session_id:session,observed_models:models,result});
+    (result.verdict==='PASS'&&result.material_findings.length&&!capabilityProbe))throw Error('invalid structured result');
+  return safe({session_id:session,observed_models:models,usage,result});
 }
 
 export async function invoke(binding,options) {
   const spec=await invocation(binding,options);
   const r=await execute(spec.argv,{...spec,cwd:options.cwd,timeoutSeconds:options.timeoutSeconds,signal:options.signal});
-  const record=safe({provider:binding.provider,requested_model:binding.model,argv:spec.argv,code:r.code,reason:r.reason,
+  const record=safe({provider:binding.provider,requested_model:binding.model,requested_effort:binding.effort??null,argv:spec.argv,code:r.code,reason:r.reason,
     started_at:r.started_at,finished_at:r.finished_at,status:failureStatus(r)});
   Object.assign(record,protocolMetadata(binding.provider,r.stdout,binding.cli??'antigravity'));
   if(!record.status&&record.denied_actions?.length){record.status='WAITING_CAPABILITY';record.reason='TOOL_PERMISSION_DENIED';}
-  if(!record.status){try{Object.assign(record,parseProtocol(binding.provider,r.stdout,binding.cli??'antigravity'));}catch{record.status='BLOCKED_TECHNICAL';record.reason='INVALID_PROTOCOL';}}
+  if(!record.status){try{Object.assign(record,parseProtocol(binding.provider,r.stdout,binding.cli??'antigravity',{capabilityProbe:options.role==='probe'}));}catch{record.status='BLOCKED_TECHNICAL';record.reason='INVALID_PROTOCOL';}}
   return record;
 }
 

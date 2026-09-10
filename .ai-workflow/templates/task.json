@@ -21,6 +21,14 @@
   "user_visible": true,
   "risk": "LOW",
   "complexity": "SIMPLE",
+  "execution": {
+    "policy": "GEMINI_FIRST_V1",
+    "prepared": false,
+    "local_synthetic": false,
+    "rationale": "Lead records the inspected scope, approach and risk checks before freezing",
+    "design_sessions": [],
+    "browser_required": true
+  },
   "candidate_head": null,
   "contract_sha256": null,
   "implementer_sessions": [],

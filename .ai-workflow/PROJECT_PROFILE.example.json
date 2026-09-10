@@ -19,6 +19,7 @@
       "effort": null,
       "verified": false
     },
+    "elevated_review": {"provider": "openai", "model": null, "effort": "high", "verified": false},
     "review": {
       "provider": "openai",
       "model": null,
