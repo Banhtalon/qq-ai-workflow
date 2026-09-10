@@ -22,6 +22,8 @@ TASK-11 của mindx-review-bot.
 - [Cầu nối CLI tuần tự](.ai-workflow/CLI_BRIDGE.md): worker → kiểm thử → reviewer → sửa,
   có checkpoint và giới hạn sửa. Mặc định ASSISTED; chỉ bật LOCAL_AUTO sau pilot thật.
   Không tự đăng nhập, không tự mua credit, không có scheduler nền.
+- [Luồng Nhanh bằng máy](.ai-workflow/FAST_LANE.md): chỉ định tuyến thay đổi tài liệu
+  thuộc allowlist cố định; mọi trường hợp không chứng minh được đều quay về Luồng Tính năng.
 
 Không có reviewer hoặc kết nối thì Lead lưu việc đang chờ; không giả lập review
 thành công và không yêu cầu Owner chuyển từng gói kỹ thuật.

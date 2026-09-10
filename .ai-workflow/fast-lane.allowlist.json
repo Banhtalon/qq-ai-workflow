@@ -1,0 +1,7 @@
+{
+  "schema_version": "qq.workflow.fast-lane.allowlist.v1",
+  "paths": [
+    "docs/user-guide/**/*.md",
+    "docs/tutorials/**/*.md"
+  ]
+}
