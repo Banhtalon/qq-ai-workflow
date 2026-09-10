@@ -22,6 +22,16 @@ test("reference-only guidance has no rule-language signals",()=>{
  }
 });
 
+test("README gives GitHub visitors a concise getting-started path",()=>{
+ const readme=readFileSync(join(workspace,"README.md"),"utf8");
+ for(const heading of ["## QQ AI Workflow giải quyết gì?","## Bắt đầu nhanh","## Chọn cách vận hành","## Tài liệu theo nhu cầu"]){
+  assert.ok(readme.includes(`${heading}\n`),heading);
+ }
+ for(const text of ["npm test","npm run workflow:check","npm run pilot",".ai-workflow/OWNER_GUIDE.md",".ai-workflow/CLI_BRIDGE.md"]){
+  assert.ok(readme.includes(text),text);
+ }
+});
+
 test("rule-language detector warns about a guide that appears to add policy",()=>{
  assert.deepEqual(
   guidanceRuleDriftTerms("This guide must never override a required workflow rule. Không được tự bỏ qua gate."),
