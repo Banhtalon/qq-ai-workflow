@@ -1,24 +1,9 @@
-# Cách làm việc với v10
-Bạn mở Codex trong thư mục dự án và nói tính năng muốn làm.
-Codex đọc tiến độ, tự xử lý kỹ thuật và báo khi có bản dùng thử.
-ChatGPT web chỉ cần dùng khi muốn bàn ý tưởng dài; chuyển bản yêu cầu đã chốt một lần.
+# Hướng dẫn Owner
 
-Ví dụ: “Thêm bộ lọc nhận xét theo lớp; đổi lớp không được mất ghi chú chưa lưu.”
-Lead ghi tiêu chí, giao phần phù hợp, chạy kiểm tra; reviewer xem lại tính năng.
-Có lỗi thì hai AI chuyển sửa bằng file/công cụ. Bạn nhận hướng dẫn thử:
-chọn lớp A, nhập ghi chú, chuyển lớp B, quay lại A và kiểm tra nội dung còn nguyên.
+Bạn mở Codex trong thư mục dự án và mô tả tính năng mong muốn. AI đọc task hiện tại, xử lý phần kỹ thuật và báo khi có bản dùng thử.
 
-Bạn quyết định cách ứng dụng hoạt động, đăng nhập khi cần, dùng thử và duyệt merge.
-Bạn không đọc diff, CI, SQL hay lựa chọn model từng lượt.
-Nếu bị kẹt, AI phải báo đang giữ bản nào, vướng gì, và phương án tiếp theo.
+Khi nhận `WAITING_QUOTA` (hết hạn mức) hoặc `WAITING_CAPABILITY` (thiếu công cụ hoặc đăng nhập), báo cáo nêu checkpoint đang giữ và bước tiếp theo. Khi nhận `BLOCKED_TECHNICAL` (vướng kỹ thuật), báo cáo nêu lỗi còn lại và phạm vi cần làm rõ. `READY_FOR_OWNER` kèm các bước dùng thử; `DONE` ghi nhận nghiệm thu.
 
-Template hiện đã có cầu nối CLI tuần tự cho Windows. Ở chế độ ASSISTED, Lead có thể
-chạy worker → gates → fresh reviewer → repair bằng Codex CLI và Antigravity CLI,
-không cần Owner chuyển từng gói kỹ thuật giữa hai AI. Bridge không tự đăng nhập,
-không tự mua credit và không tự fallback sang API trả phí.
+Ví dụ yêu cầu: “Thêm bộ lọc nhận xét theo lớp; đổi lớp vẫn giữ ghi chú chưa lưu.”
 
-LOCAL_AUTO vẫn tắt mặc định. Chỉ bật sau khi đã có pilot thật đáp ứng điều kiện trong
-CLI_BRIDGE.md, gồm probe account/model hợp lệ, repair/review hoàn chỉnh và một lần
-quota pause → resume an toàn khi tình huống đó xảy ra tự nhiên. Nếu thiếu CLI,
-reviewer, quyền hoặc quota, Lead giữ checkpoint và báo trạng thái chờ; không được
-coi task là đã review hoặc DONE khi bằng chứng cuối chưa hợp lệ.
+Bạn quyết định cách ứng dụng hoạt động, đăng nhập khi cần, dùng thử và duyệt merge. [V10 canonical spec](V10_CANONICAL_SPEC.md) là nguồn quy tắc workflow duy nhất; [Owner status](OWNER_STATUS.md) có mẫu báo cáo ngắn.

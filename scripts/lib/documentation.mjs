@@ -9,9 +9,12 @@ export const REFERENCE_GUIDANCE_FILES = [
   ".ai-workflow/ROUTING.md",
   ".ai-workflow/STATE_MACHINE.md",
   ".ai-workflow/OWNER_STATUS.md",
+  ".ai-workflow/HANDOFF_FILES.md",
+  ".ai-workflow/OWNER_GUIDE.md",
   ".ai-workflow/prompts/LEAD_BOOTSTRAP.md",
   ".ai-workflow/prompts/IMPLEMENTER_BOOTSTRAP.md",
-  ".ai-workflow/prompts/REVIEWER_BOOTSTRAP.md"
+  ".ai-workflow/prompts/REVIEWER_BOOTSTRAP.md",
+  ".ai-workflow/prompts/OWNER_QUICK_PROMPTS.md"
 ];
 
 const RULE_SIGNALS = [
