@@ -88,6 +88,32 @@ test('Google protocol retains reported usage and distinguishes absent counters',
  assert.deepEqual(parseProtocol('google',JSON.stringify(envelope),'antigravity').usage,envelope.result.usage);
 });
 
+test('risk elevation invalidates ordinary review at the same head and selects elevated reviewer',async()=>{
+ const f=await setup('pass');try{
+  const t=await readJson(f.taskPath);t.task_id='TASK-RISK-UPGRADE';
+  t.execution={policy:'GEMINI_FIRST_V1',prepared:true,local_synthetic:true,rationale:'Local fixture',design_sessions:[],browser_required:false};
+  const taskPath=path.join(f.dir,'modern.json');await writeJson(taskPath,t);await freeze(taskPath);
+  const config={...f.config,elevated_reviewer:{...f.config.reviewer,model:'elevated-fixture'}};
+  const run=resume=>runBridge({cwd:f.repo,taskPath,config,packetDir:f.packetDir,pilot:true,resume});
+  assert.equal((await run(false)).status,'READY_FOR_OWNER');
+  const changed=await readJson(taskPath);changed.effective_risk='ELEVATED';await writeJson(taskPath,changed);
+  await writeJson(path.join(f.packetDir,'evidence.json'),await verify(taskPath,f.repo));
+  assert.equal((await run(true)).status,'NEEDS_FIX');
+  const final=await run(true);assert.equal(final.status,'READY_FOR_OWNER');
+  assert.equal(final.history.at(-1).tier,'elevated_reviewer');
+ }finally{await f.cleanup();}
+});
+
+test('corrected material review follows repair budget and does not shop for another approval',async()=>{
+ const f=await setup('pass');try{
+  assert.equal((await f.run()).status,'READY_FOR_OWNER');
+  const file=path.join(f.packetDir,'review.json'),r=await readJson(file);r.verdict='NEEDS_FIX';r.material_findings=['fix the fixture'];await writeJson(file,r);
+  const paused=await f.run({resume:true});assert.equal(paused.status,'NEEDS_FIX');assert.equal(paused.phase,'repair');
+  const final=await f.run({resume:true});assert.equal(final.status,'READY_FOR_OWNER');assert.equal(final.repair_rounds,1);
+  assert.equal(await readFile(path.join(f.repo,'feature.txt'),'utf8'),'repaired\n');
+ }finally{await f.cleanup();}
+});
+
 test('missing elevated reviewer stops before any writer call',async()=>{
  const f=await setup('pass');try{
   const t=await readJson(f.taskPath);t.task_id='TASK-MISSING-REVIEWER';t.risk='ELEVATED';

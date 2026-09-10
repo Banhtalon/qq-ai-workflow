@@ -26,6 +26,10 @@ export function validateConfig(c) {
 }
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
 const configHash=c=>hash({...c,mode:'ASSISTED'});
+function boundReadiness(t,e,r,config){
+  if(t.execution?.policy==='GEMINI_FIRST_V1'&&r&&r.reviewer_binding_hash!==hash(config[executionRoute(t).reviewer]??null))return {status:'NEEDS_FIX',reason:'review binding is stale'};
+  return readiness(t,e,r);
+}
 async function bridgeHash(){return hash(await Promise.all(['bridge.mjs','bridge-adapters.mjs','bridge-process.mjs','workflow.mjs','redact.mjs'].map(f=>readFile(new URL(f,import.meta.url),'utf8'))));}
 export async function acquire(cwd) {
   // Common Git directory makes the writer lock apply across linked worktrees.
@@ -65,7 +69,7 @@ async function acceptedPilot(config,pilotDir,{requirePilotCheckout=true}={}) {
   const calls=s.history.filter(h=>['worker','reviewer'].includes(h.phase)&&!h.status&&h.session_id);
   required(new Set(calls.map(c=>c.provider)).size===2,'both real subscription providers required');
   const t=await readJson(s.task_path);await assertContract(s.task_path,t);if(requirePilotCheckout)cleanHead(s.cwd,s.head);
-  const ready=readiness(t,await readJson(path.join(pilotDir,'evidence.json')),await readJson(path.join(pilotDir,'review.json')));
+  const ready=boundReadiness(t,await readJson(path.join(pilotDir,'evidence.json')),await readJson(path.join(pilotDir,'review.json')),config);
   required(['READY_FOR_OWNER','DONE'].includes(ready.status),'pilot evidence/review no longer current');
   return {s,t,pilotDir:path.resolve(pilotDir),pilot_digest:hash(s),config_hash:configHash(config),bridge_hash:await bridgeHash()};
 }
@@ -168,9 +172,13 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
       if(state.status==='BLOCKED_TECHNICAL')return state;
       if(['DONE','READY_FOR_OWNER'].includes(state.status)){
         const optional=async file=>{try{return await readJson(file);}catch(e){if(e.code==='ENOENT')return null;throw e;}};
-        const ready=readiness(t,await optional(path.join(packetDir,'evidence.json')),await optional(path.join(packetDir,'review.json')));
+        const review=await optional(path.join(packetDir,'review.json'));
+        const ready=boundReadiness(t,await optional(path.join(packetDir,'evidence.json')),review,config);
         state.status=ready.status;state.error=ready.reason??null;
-        if(ready.status==='NEEDS_FIX')state.phase='gates';
+        if(ready.status==='NEEDS_FIX'){
+          if(review?.head===t.candidate_head&&review.contract_sha256===t.contract_sha256&&Array.isArray(review.material_findings)&&review.material_findings.length){state.phase='repair';state.feedback=review;}
+          else state.phase=ready.reason?.startsWith('review')?'reviewer':'gates';
+        }
         await save();return state;
       }
     } else {
@@ -185,8 +193,11 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
     }
     if(!config[executionRoute(t).reviewer]){state.status='WAITING_CAPABILITY';state.error='required reviewer binding missing';await save();return state;}
     if(resume&&state.phase==='reviewer'&&state.status==='WAITING_CAPABILITY'){
-      const ready=readiness(t,await readJson(path.join(packetDir,'evidence.json')),await readJson(path.join(packetDir,'review.json')).catch(()=>null));
+      const review=await readJson(path.join(packetDir,'review.json')).catch(e=>{if(e.code==='ENOENT')return null;throw e;});
+      const ready=boundReadiness(t,await readJson(path.join(packetDir,'evidence.json')),review,config);
       if(['DONE','READY_FOR_OWNER'].includes(ready.status)||ready.reason==='current local browser evidence needed'){state.status=ready.status;await save();return state;}
+      if(review?.head===t.candidate_head&&review.contract_sha256===t.contract_sha256&&Array.isArray(review.material_findings)&&review.material_findings.length){state.phase='repair';state.feedback=review;await save();}
+      else if(ready.status==='NEEDS_FIX'&&!ready.reason?.startsWith('review')){state.phase='gates';await save();}
     }
     // No writer starts until all configured subscription accounts/models answer.
     const capability=await inspect(cwd,config,path.join(packetDir,'capabilities'),true,signal);
@@ -251,10 +262,10 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
         const identity=`${config[tier].provider}:${result.session_id}`;
         required(!t.implementer_sessions.includes(identity)&&!t.execution?.design_sessions.includes(identity),'reviewer session is not independent');
         const review={schema_version:'qq.workflow.review.v10',task_id:t.task_id,revision:t.revision,head:state.head,contract_sha256:t.contract_sha256,
-          reviewer_session:identity,independent:true,...result.result};
+          reviewer_session:identity,independent:true,effective_risk:t.effective_risk,reviewer_tier:tier,reviewer_binding_hash:hash(config[tier]),...result.result};
         await atomicJson(path.join(packetDir,'review.json'),review);
         state.feedback=review;
-        const ready=readiness(t,await readJson(path.join(packetDir,'evidence.json')),review);
+        const ready=boundReadiness(t,await readJson(path.join(packetDir,'evidence.json')),review,config);
         if(['DONE','READY_FOR_OWNER'].includes(ready.status)){state.status=ready.status;state.in_flight=null;await save();return state;}
         if(ready.status==='WAITING_CAPABILITY'){state.status=ready.status;state.in_flight=null;state.error=ready.reason;await save();return state;}
         state.phase='repair';

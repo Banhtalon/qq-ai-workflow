@@ -26,7 +26,7 @@ test('design participant cannot approve; browser evidence binds final version',a
  const f=await fixture();try{
   const e=await verify(f.taskPath,f.repo),t={...f.task,execution:{...execution,browser_required:true}};
   t.contract_sha256=contractHash(t);e.contract_sha256=t.contract_sha256;
-  const r=review(t);
+  const r={...review(t),effective_risk:t.effective_risk,reviewer_tier:'reviewer'};
   assert.equal(readiness(t,e,r).status,'WAITING_CAPABILITY');
   t.ui_evidence={head:t.candidate_head,contract_sha256:t.contract_sha256,url:'http://localhost:3000/',status:'PASS',checks:[{action:'Open page',observed:'Expected form visible',passed:true}]};
   assert.equal(readiness(t,e,r).status,'READY_FOR_OWNER');

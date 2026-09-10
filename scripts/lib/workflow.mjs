@@ -152,6 +152,7 @@ export function readiness(t,e,r){
       b.code!==0||b.timed_out!==false||b.redaction_applied!==true)return wait("required gate not passed");
   }
   if(!r)return {status:"WAITING_CAPABILITY",reason:"independent review needed"};
+  if(t.execution?.policy==='GEMINI_FIRST_V1'&&(r.effective_risk!==t.effective_risk||r.reviewer_tier!==executionRoute(t).reviewer))return wait('review risk or tier is stale');
   if(r.schema_version!=="qq.workflow.review.v10"||r.task_id!==t.task_id||r.revision!==t.revision||
     r.head!==t.candidate_head||r.contract_sha256!==t.contract_sha256||r.independent!==true||
     !text(r.reviewer_session)||t.implementer_sessions.includes(r.reviewer_session)||t.execution?.design_sessions.includes(r.reviewer_session))

@@ -61,6 +61,10 @@ Unprepared complex/elevated work uses senior. Elevated tasks in this policy requ
 an explicitly configured elevated reviewer, never a silent ordinary-review fallback.
 Gemini-first bridge configurations include that reviewer even for initially LOW
 tasks so later risk elevation does not require changing the checkpoint configuration.
+Gemini-first review records bind effective risk, reviewer tier and the configured
+reviewer binding digest. Risk elevation needs a fresh elevated review even at the
+same head. Cached readiness is revalidated; material findings go to bounded repair,
+not to another approval attempt without implementation repair.
 Design participants cannot review that feature. Lead may obtain at most one senior
 design consultation before freezing the contract and records its session identity;
 consultation does not reset or extend implementation repair budgets. Missing design
