@@ -1,5 +1,6 @@
 import path from 'node:path';
 import {writeFile,mkdir,readFile} from 'node:fs/promises';
+import {randomUUID} from 'node:crypto';
 import os from 'node:os';
 import {execute,subscriptionEnv,failureStatus,safe} from './bridge-process.mjs';
 import {beginInvocation,finishInvocation} from './receipts.mjs';
