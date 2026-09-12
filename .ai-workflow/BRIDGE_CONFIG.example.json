@@ -6,7 +6,7 @@
   "write_paths": ["src/example.mjs"],
   "gate_paths": ["test", "scripts/check-kit.mjs"],
   "worker": {"provider": "google", "cli": "antigravity", "command": ["agy"], "model": "REPLACE_WITH_PROBED_MODEL"},
-  "reviewer": {"provider": "openai", "command": ["codex"], "model": "REPLACE_WITH_PROBED_MODEL"},
-  "senior": {"provider": "openai", "command": ["codex"], "model": "REPLACE_WITH_PROBED_MODEL"},
-  "elevated_reviewer": {"provider": "openai", "command": ["codex"], "model": "REPLACE_WITH_PROBED_MODEL", "effort": "high"}
+  "reviewer": {"provider": "openai", "cli": "codex", "command": ["codex"], "model": "REPLACE_WITH_PROBED_MODEL"},
+  "senior": {"provider": "openai", "cli": "codex", "command": ["codex"], "model": "REPLACE_WITH_PROBED_MODEL"},
+  "elevated_reviewer": {"provider": "openai", "cli": "codex", "command": ["codex"], "model": "REPLACE_WITH_PROBED_MODEL", "effort": "high"}
 }

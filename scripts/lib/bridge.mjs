@@ -72,7 +72,7 @@ export async function loadReviewSource(packetDir,r){
 async function boundReadiness(t,e,r,config,packetDir){
   return readiness(t,e,r,{reviewerBinding:config[executionRoute(t).reviewer],sourceSnapshot:await loadReviewSource(packetDir,r),sourceConfigHash:configHash(config)});
 }
-async function bridgeHash(){return hash(await Promise.all(['bridge.mjs','bridge-adapters.mjs','bridge-process.mjs','workflow.mjs','redact.mjs'].map(f=>readFile(new URL(f,import.meta.url),'utf8'))));}
+export async function bridgeHash(){return hash(await Promise.all(['bridge.mjs','bridge-adapters.mjs','bridge-process.mjs','workflow.mjs','redact.mjs','receipts.mjs'].map(f=>readFile(new URL(f,import.meta.url),'utf8'))));}
 export async function acquire(cwd) {
   // Common Git directory makes the writer lock apply across linked worktrees.
   const common=git(cwd,'rev-parse','--path-format=absolute','--git-common-dir').trim();
@@ -81,10 +81,10 @@ export async function acquire(cwd) {
   await fd.writeFile(JSON.stringify({pid:process.pid,cwd,created_at:new Date().toISOString()}));await fd.sync();
   return async()=>{await fd.close();await unlink(file);};
 }
-export async function inspect(cwd,config,packetDir,probe=false,signal) {
+export async function inspect(cwd,config,packetDir,probe=false,signal,receiptRoot=packetDir) {
   validateConfig(config);const head=cleanHead(cwd);const reports=[];
   for(const role of ['worker','reviewer','senior',...(config.elevated_reviewer?['elevated_reviewer']:[])]){
-    const report=await doctor(config[role],{cwd,packetDir:path.join(packetDir,role),probe,signal});
+    const report=await doctor(config[role],{cwd,packetDir:path.join(packetDir,role),probe,signal,receiptRoot});
     cleanHead(cwd,head);reports.push({role,...report});
   }
   const result={schema_version:'qq.bridge.doctor.v1',platform:process.platform,head,config_hash:configHash(config),recorded_at:new Date().toISOString(),
@@ -265,7 +265,7 @@ export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resum
       else if(ready.status==='NEEDS_FIX'&&!ready.reason?.startsWith('review')){state.phase='gates';await save();}
     }
     // No writer starts until all configured subscription accounts/models answer.
-    const capability=await inspect(cwd,config,path.join(packetDir,'capabilities'),true,signal);
+    const capability=await inspect(cwd,config,path.join(packetDir,'capabilities'),true,signal,packetDir);
     const preflight=applyPreflight(state,capability);state=preflight.state;await save();
     if(!preflight.proceed)return state;
     while(true) {

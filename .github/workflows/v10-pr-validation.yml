@@ -31,3 +31,15 @@ jobs:
         run: npm run pilot
       - name: Active diff whitespace check
         run: git diff --check origin/main...HEAD -- . ':(exclude)legacy/v9.1.2/**'
+
+  windows-receipts:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Receipt and bridge tests on Windows
+        run: npm test
