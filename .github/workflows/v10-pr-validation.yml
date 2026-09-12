@@ -42,4 +42,4 @@ jobs:
         with:
           node-version: '20'
       - name: Receipt and bridge tests on Windows
-        run: npm test -- --test-name-pattern="receipt|bridge"
+        run: npm test
