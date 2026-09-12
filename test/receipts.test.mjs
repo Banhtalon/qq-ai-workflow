@@ -1,53 +1,60 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import {mkdtemp,writeFile,readFile,rm,mkdir} from 'node:fs/promises';
+import {mkdtemp,writeFile,readFile,rm,mkdir,readdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import {beginInvocation,finishInvocation,normalizeUsage,promptHash,verifyReceiptChain} from '../scripts/lib/receipts.mjs';
-import {invoke} from '../scripts/lib/bridge-adapters.mjs';
+import {doctor} from '../scripts/lib/bridge-adapters.mjs';
 
 async function fixture(){
   const dir=await mkdtemp(path.join(tmpdir(),'qq-receipts-'));const repo=path.join(dir,'repo');await mkdir(repo);
-  const state={schema_version:'qq.bridge.run.v1',run_id:'run-receipt-test',task_path:path.join(dir,'task.json'),contract_sha256:'c'.repeat(64),head:'h'.repeat(40)};
-  const task={task_id:'TASK-RECEIPT',revision:2,contract_sha256:state.contract_sha256,goal:'receipt fixture'};
+  const state={schema_version:'qq.bridge.run.v1',run_id:'run-receipt-test',task_path:path.join(dir,'task.json'),contract_sha256:'c'.repeat(64),head:'h'.repeat(40),repair_rounds:0,senior_passes:0,phase:'worker'};
+  const task={schema_version:'qq.workflow.task.v10',task_id:'TASK-RECEIPT',revision:2,contract_sha256:state.contract_sha256,goal:'receipt fixture',risk:'LOW',effective_risk:'LOW',complexity:'SIMPLE',execution:{policy:'GEMINI_FIRST_V1',prepared:true,local_synthetic:false,rationale:'fixture',design_sessions:[],browser_required:false}};
   await writeFile(path.join(dir,'state.json'),JSON.stringify(state));await writeFile(state.task_path,JSON.stringify(task));
-  return {dir,repo,cleanup:()=>rm(dir,{recursive:true,force:true})};
+  return {dir,repo,state,task,cleanup:()=>rm(dir,{recursive:true,force:true})};
+}
+async function resetContext(f,patchState={},patchTask={}){
+  Object.assign(f.state,patchState);Object.assign(f.task,patchTask);await writeFile(path.join(f.dir,'state.json'),JSON.stringify(f.state));await writeFile(f.taskPath??f.state.task_path,JSON.stringify(f.task));
 }
 
-test('assignment receipt separates requested model and hashes prompt without storing it',async()=>{
+ test('assignment receipt separates requested model and hashes prompt without storing it',async()=>{
  const f=await fixture();try{
   const packet=path.join(f.dir,'call');const prompt='FULL PROMPT VALUE';const binding={provider:'openai',cli:'codex',model:'fixture',effort:'medium'};
-  const ctx=await beginInvocation({packetDir:packet,role:'worker',binding,prompt,started_at:'2026-09-12T10:00:00.000Z'});
-  const r=JSON.parse(await readFile(path.join(packet,'receipts','assignment.json'),'utf8'));
-  assert.equal(r.task_id,'TASK-RECEIPT');assert.equal(r.run_id,'run-receipt-test');assert.equal(r.requested_model,'fixture');
-  assert.equal(r.prompt_sha256,createHash('sha256').update(prompt).digest('hex'));assert.equal(JSON.stringify(r).includes(prompt),false);assert.ok(ctx.assignment.assignment_id);
+  const ctx=await beginInvocation({packetDir:packet,role:'worker',binding,prompt,started_at:'2026-09-12T10:00:00.000Z'});const r=JSON.parse(await readFile(path.join(packet,'receipts','assignment.json'),'utf8'));
+  assert.equal(r.task_id,'TASK-RECEIPT');assert.equal(r.run_id,'run-receipt-test');assert.equal(r.requested_model,'fixture');assert.equal(r.cli,'codex');assert.equal(r.prompt_sha256,createHash('sha256').update(prompt).digest('hex'));assert.equal(JSON.stringify(r).includes(prompt),false);assert.ok(ctx.assignment.assignment_id);
  }finally{await f.cleanup();}
 });
 
 test('execution receipt records provider, requested/observed models, usage and chain hash',async()=>{
  const f=await fixture();try{
-  const packet=path.join(f.dir,'call');const binding={provider:'google',cli:'antigravity',model:'gemini-3'};const prompt='small prompt';
-  const ctx=await beginInvocation({packetDir:packet,role:'reviewer',binding,prompt,started_at:'2026-09-12T10:00:00.000Z'});
+  const packet=path.join(f.dir,'call');const binding={provider:'google',cli:'antigravity',model:'gemini-3'};const prompt='small prompt';const ctx=await beginInvocation({packetDir:packet,role:'worker',binding,prompt,started_at:'2026-09-12T10:00:00.000Z'});
   const result={provider:'google',requested_model:'gemini-3',observed_models:['gemini-3.1'],session_id:'session-1',status:null,usage:{input_tokens:10,output_tokens:5},result:{summary:'ok',material_findings:[]}};
-  const receipt=await finishInvocation({packetDir:packet,role:'reviewer',binding,prompt,result,started_at:'2026-09-12T10:00:00.000Z',finished_at:'2026-09-12T10:00:01.000Z',context:ctx});
-  assert.equal(receipt.requested_model,'gemini-3');assert.deepEqual(receipt.observed_models,['gemini-3.1']);assert.equal(receipt.usage.total_tokens,15);assert.equal(receipt.duration_ms,1000);assert.equal(receipt.prev_receipt_sha256,null);assert.match(receipt.receipt_sha256,/^[a-f0-9]{64}$/);
-  assert.equal(JSON.stringify(receipt).includes(prompt),false);assert.equal(await verifyReceiptChain(f.dir),true);
+  const receipt=await finishInvocation({packetDir:packet,role:'worker',binding,prompt,result,started_at:'2026-09-12T10:00:00.000Z',finished_at:'2026-09-12T10:00:01.000Z',context:ctx});
+  assert.equal(receipt.requested_model,'gemini-3');assert.deepEqual(receipt.observed_models,['gemini-3.1']);assert.equal(receipt.usage.total_tokens,15);assert.equal(receipt.duration_ms,1000);assert.equal(receipt.prev_receipt_sha256,null);assert.match(receipt.receipt_sha256,/^[a-f0-9]{64}$/);assert.equal(JSON.stringify(receipt).includes(prompt),false);
+  assert.equal((await verifyReceiptChain(f.dir)).ok,true);
  }finally{await f.cleanup();}
 });
 
-test('usage explicitly reports unavailable instead of inventing quota',()=>{
- const usage=normalizeUsage(null,'google');assert.deepEqual(usage,{source:'unavailable',input_tokens:null,output_tokens:null,reasoning_tokens:null,cached_tokens:null,total_tokens:null});
- assert.equal(promptHash('x').length,64);
+test('all six execution kinds are classified from actual workflow state',async()=>{
+ const cases=[['probe','PROBE',{phase:'worker',repair_rounds:0,senior_passes:0},{}],['worker','WORK',{phase:'worker',repair_rounds:0,senior_passes:0},{complexity:'SIMPLE',risk:'LOW',effective_risk:'LOW'}],['reviewer','REVIEW',{phase:'reviewer',repair_rounds:0,senior_passes:0},{risk:'LOW',effective_risk:'LOW'}],['repair','REPAIR',{phase:'worker',repair_rounds:1,senior_passes:0},{complexity:'SIMPLE',risk:'LOW',effective_risk:'LOW'}],['senior','SENIOR',{phase:'worker',repair_rounds:2,senior_passes:1},{complexity:'SIMPLE',risk:'LOW',effective_risk:'LOW'}],['elevated_reviewer','ELEVATED_REVIEW',{phase:'reviewer',repair_rounds:0,senior_passes:0},{risk:'ELEVATED',effective_risk:'ELEVATED'}]];
+ for(const [role,expected,statePatch,taskPatch] of cases){const f=await fixture();try{await resetContext(f,statePatch,taskPatch);const binding={provider:'openai',cli:'codex',model:'fixture'};const ctx=await beginInvocation({packetDir:path.join(f.dir,role),role,binding,prompt:'p',started_at:'2026-09-12T10:00:00.000Z'});assert.equal(ctx.assignment.kind,expected);}finally{await f.cleanup();}}
 });
 
-test('invoke emits one assignment and one execution receipt for a real invocation',async()=>{
- const f=await fixture();try{
-  const cli=path.join(f.dir,'fake.mjs');await writeFile(cli,`for await(const c of process.stdin){};console.log(JSON.stringify({type:'thread.started',thread_id:'receipt-session'}));console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:JSON.stringify({verdict:'PASS',summary:'ok',material_findings:[],risk_checks_completed:true})}}));console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:7,output_tokens:3}}));`);
-  const packet=path.join(f.dir,'invoke');const binding={provider:'openai',cli:'codex',model:'fixture',command:[process.execPath,cli]};
-  const result=await invoke(binding,{cwd:f.repo,packetDir:packet,role:'worker',prompt:'temporary prompt value',timeoutSeconds:2});
-  assert.equal(result.session_id,'receipt-session');
-  const assignment=JSON.parse(await readFile(path.join(packet,'receipts','assignment.json'),'utf8'));const execution=JSON.parse(await readFile(path.join(packet,'receipts','execution.json'),'utf8'));
-  assert.equal(assignment.assignment_id,execution.assignment_id);assert.equal(execution.status,null);assert.equal(execution.usage.total_tokens,10);assert.equal(JSON.stringify(execution).includes('temporary prompt value'),false);
+test('usage explicitly reports unavailable instead of inventing quota',()=>{const usage=normalizeUsage(null,'google');assert.deepEqual(usage,{source:'unavailable',input_tokens:null,output_tokens:null,reasoning_tokens:null,cached_tokens:null,total_tokens:null});assert.equal(promptHash('x').length,64);});
+
+test('model output that echoes the prompt is sanitized in receipts',async()=>{
+ const f=await fixture();try{const packet=path.join(f.dir,'echo');const prompt='SECRET FULL TASK PROMPT';const binding={provider:'openai',cli:'codex',model:'fixture'};const ctx=await beginInvocation({packetDir:packet,role:'worker',binding,prompt,started_at:'2026-09-12T10:00:00.000Z'});const receipt=await finishInvocation({packetDir:packet,role:'worker',binding,prompt,result:{session_id:'s',status:null,result:{summary:`echo ${prompt}`,material_findings:[prompt]}},started_at:'2026-09-12T10:00:00.000Z',finished_at:'2026-09-12T10:00:01.000Z',context:ctx});assert.equal(JSON.stringify(receipt).includes(prompt),false);}finally{await f.cleanup();}
+});
+
+test('tampering, deletion and reordering are detected by the receipt verifier',async()=>{
+ const f=await fixture();try{const binding={provider:'openai',cli:'codex',model:'fixture'};for(const [i,kind] of [['one','WORK'],['two','WORK']]){const packet=path.join(f.dir,kind.toLowerCase(),i);const ctx=await beginInvocation({packetDir:packet,role:'worker',receiptKind:kind,binding,prompt:i,started_at:'2026-09-12T10:00:00.000Z'});await finishInvocation({packetDir:packet,receiptRoot:f.dir,role:'worker',receiptKind:kind,binding,prompt:i,result:{session_id:i,status:null,result:{summary:'ok',material_findings:[]}},started_at:'2026-09-12T10:00:00.000Z',finished_at:'2026-09-12T10:00:01.000Z',context:ctx});}
+  assert.equal((await verifyReceiptChain(f.dir)).ok,true);const first=path.join(f.dir,'work','one','receipts','execution.json');const second=path.join(f.dir,'work','two','receipts','execution.json');const original=await readFile(first,'utf8');const value=JSON.parse(original);value.status='tampered';await writeFile(first,JSON.stringify(value));assert.equal((await verifyReceiptChain(f.dir)).ok,false);await writeFile(first,original);const chain=JSON.parse(await readFile(path.join(f.dir,'.receipts-chain.json'),'utf8'));chain.entries.reverse();await writeFile(path.join(f.dir,'.receipts-chain.json'),JSON.stringify(chain));assert.equal((await verifyReceiptChain(f.dir)).ok,false);chain.entries.reverse();await writeFile(path.join(f.dir,'.receipts-chain.json'),JSON.stringify(chain));await rm(second);assert.equal((await verifyReceiptChain(f.dir)).ok,false);
+ }finally{await f.cleanup();}
+});
+
+test('repeated capability probes get independent receipt directories',async()=>{
+ const f=await fixture();try{const cli=path.join(f.dir,'fake-probe.mjs');await writeFile(cli,`if(process.argv[2]==='--version'){console.log('fake');process.exit(0)} if(process.argv[2]==='login'){console.log('Logged in using ChatGPT');process.exit(0)} for await(const c of process.stdin){};console.log(JSON.stringify({type:'thread.started',thread_id:Math.random().toString(36)}));console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:JSON.stringify({verdict:'PASS',summary:'probe',material_findings:[],risk_checks_completed:false})}}));console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_tokens:1}}));`);
+  const binding={provider:'openai',cli:'codex',model:'fixture',command:[process.execPath,cli]};const root=path.join(f.dir,'capabilities','worker');await doctor(binding,{cwd:f.repo,packetDir:root,probe:true});await doctor(binding,{cwd:f.repo,packetDir:root,probe:true});const dirs=(await readdir(root,{withFileTypes:true})).filter(x=>x.isDirectory());assert.equal(dirs.length,2);for(const d of dirs){assert.ok(await readFile(path.join(root,d.name,'receipts','assignment.json')));assert.ok(await readFile(path.join(root,d.name,'receipts','execution.json')));}
  }finally{await f.cleanup();}
 });
