@@ -1,9 +1,9 @@
 # QQ AI Workflow v10 — Personal Local
-Version: **10.0.0-rc.1** · Stage: **sequential CLI bridge; LOCAL_AUTO requires quota-drill activation**
+Version: **10.0.0-rc.2** · Stage: **sequential CLI bridge; LOCAL_AUTO requires quota-drill activation**
 
-Một Codex nhận yêu cầu, tự làm hoặc giao Gemini, kiểm thử, gọi reviewer độc lập,
-sửa lỗi và đưa bản dùng thử cho Owner. Dành cho một người dùng, dự án nhỏ trên
-Windows. ChatGPT web là nơi bàn ý tưởng tùy chọn.
+Một Codex nhận yêu cầu, tự làm hoặc giao worker Google qua Antigravity CLI, kiểm thử,
+gọi reviewer độc lập, sửa lỗi và đưa bản dùng thử cho Owner. Dành cho một người dùng,
+dự án nhỏ trên Windows. ChatGPT web là nơi bàn ý tưởng tùy chọn.
 
 ## Bắt đầu
 Đọc [hướng dẫn Owner](.ai-workflow/OWNER_GUIDE.md), sau đó giao yêu cầu trong Codex:
@@ -19,10 +19,12 @@ TASK-11 của mindx-review-bot.
 - Contract yêu cầu/kiểm thử được chốt trước code; evidence gắn đúng commit.
 - Công cụ local: chốt contract, chạy gates có che thông tin nhạy cảm,
   kiểm tra gói kết quả, đề xuất route và báo trạng thái.
-- [Cầu nối CLI tuần tự](.ai-workflow/CLI_BRIDGE.md): worker → kiểm thử → reviewer → sửa,
+- [Cầu nối CLI tuần tự](.ai-workflow/CLI_BRIDGE.md): worker Google qua Antigravity CLI → kiểm thử → reviewer Codex → sửa,
   có checkpoint và giới hạn sửa. Mặc định ASSISTED; chỉ bật LOCAL_AUTO sau pilot thật
   và quota drill kiểm tra dừng/tiếp tục khi hết hạn mức.
   Không tự đăng nhập, không tự mua credit, không có scheduler nền.
+- Execution identity được ghi tách biệt theo role, provider, CLI, requested model,
+  observed model, session và provider-reported usage; không suy đoán model thực tế từ config.
 - [Luồng Nhanh bằng máy](.ai-workflow/FAST_LANE.md): chỉ định tuyến thay đổi tài liệu
   thuộc allowlist cố định; mọi trường hợp không chứng minh được đều quay về Luồng Tính năng.
 

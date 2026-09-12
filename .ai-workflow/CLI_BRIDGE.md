@@ -19,6 +19,8 @@ node scripts/bridge.mjs activate <bridge-config.json> <accepted-pilot-packets> <
 
 `workflow.mjs route` trả đề xuất trong chế độ ASSISTED. Bridge ghi argv, thời gian, session, model báo cáo, head, kết quả đã redaction và checkpoint vào run packets. `quota-drill` không gọi AI: nó kiểm tra cầu nối xử lý `WAITING_QUOTA` (hết hạn mức) và resume (tiếp tục) an toàn trên bản sao trạng thái. Dùng thư mục activation tách khỏi packet pilot đã chấp nhận. `activate` chỉ nhận pilot và biên nhận quota drill cùng khớp với canonical spec.
 
+Mỗi lượt thực thi phân biệt `role`, `provider`, `cli`, `requested_model`, `observed_models` và `session_id`. Antigravity là CLI worker hiện tại cho provider Google; Codex là CLI hiện tại cho các vai trò review/senior. Model thực tế lấy từ probe hoặc metadata do CLI/provider báo cáo, không suy đoán từ tên CLI.
+
 ## Ngữ cảnh review và dữ liệu test
 
 `review_context_paths` trong config liệt kê file hoặc thư mục bổ sung cho reviewer,
@@ -32,11 +34,12 @@ lượt review có `review-source.json`: diff, nội dung đã kiểm tra và ha
 cấu hình tự phát hiện dữ liệu giả. File test mới hoặc thay đổi nội dung cần được
 kiểm tra lại; config thay đổi không thể tiếp tục checkpoint cũ. Chuỗi giống khóa
 truy cập thật vẫn bị chặn. Các chi tiết giới hạn nằm trong canonical spec.
-Task Gemini-first ghi `execution.source_approvals_sha256` bằng SHA-256 của
+
+Task Google-worker-first ghi `execution.source_approvals_sha256` bằng SHA-256 của
 `JSON.stringify(config.synthetic_source_approvals)` trước khi freeze.
 
 ## Khôi phục
 
-Lệnh trạng thái cho packet Gemini-first: `node scripts/workflow.mjs status <task> <evidence> <review> <repo> <bridge-config>`. Tham số cuối cung cấp cấu hình reviewer kỳ vọng cho cùng phép kiểm tra readiness được bridge sử dụng.
+Lệnh trạng thái cho packet Google-worker-first: `node scripts/workflow.mjs status <task> <evidence> <review> <repo> <bridge-config>`. Tham số cuối cung cấp cấu hình reviewer kỳ vọng cho cùng phép kiểm tra readiness được bridge sử dụng.
 
 Khi tiến trình kết thúc bất thường, run packet giữ in-flight marker, session và diff để Lead đối chiếu trước lần thao tác tiếp theo. `status` đọc checkpoint hiện có. Danh sách tham số và cấu hình mẫu ở [BRIDGE_CONFIG.example.json](BRIDGE_CONFIG.example.json).
