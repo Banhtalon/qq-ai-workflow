@@ -1,5 +1,5 @@
 # QQ AI Workflow v10 — canonical local contract
-Version 10.0.0-rc.1. This revision intentionally replaces v9 for adopted v10 tasks.
+Version 10.0.0-rc.2. This revision intentionally replaces v9 for adopted v10 tasks.
 Scope: one Owner, local personal projects, subscription access. Not a production
 or adversarial agent isolation framework. CLI connection is a separate stage.
 
@@ -29,6 +29,21 @@ feature (including its design); assess contract, diff, tests and risk against ex
 Different provider preferred; a fresh separate session on the same model is allowed
 when competent. Identity is recorded, not authenticated by this local kit.
 
+## Execution identity vocabulary
+Workflow responsibility and execution identity are separate concepts and must not be
+collapsed in packets or Owner reports:
+- **role**: workflow responsibility such as `worker`, `senior`, `reviewer` or `elevated_reviewer`.
+- **provider**: account/service family used by the CLI, such as `google` or `openai`.
+- **CLI**: executable interface actually invoked, such as `antigravity` (`agy`) or `codex`.
+- **requested_model**: model ID selected by the frozen bridge/configuration before invocation.
+- **observed_models**: model IDs actually reported by the provider/CLI during the invocation.
+- **session_id**: provider/CLI session identity returned by the invocation when available.
+- **usage**: provider-reported counters, or `null` when unavailable.
+
+Owner-facing reporting must distinguish requested identity from observed identity and
+must never infer an observed model from a configuration value. A CLI name is not a
+model name, and a provider name is not a role.
+
 ## Per-feature loop
 1. Read host task state; protect uncommitted work. Create one feature branch/checkpoint.
 2. Write a short contract: behavior, exclusions, base SHA, acceptance criteria, gates,
@@ -48,20 +63,22 @@ Risk LOW/ELEVATED is potential harm; complexity SIMPLE/COMPLEX is reasoning effo
 Auth, permissions, migrations, data destruction, privacy, credential handling or
 deployment changes elevate risk even if one line. Lead inspects content and behavior;
 path heuristics alone cannot certify safety. Risk cannot decrease within a revision.
-Simple low-risk work: configured fast implementer, normally Gemini Flash.
+Simple low-risk work: configured fast implementer on the configured Google worker route.
 Complex or elevated work: configured senior-capable agent; independent competent
 reviewer. Model IDs/effort must be discovered and tested on the Owner's account.
 These defaults remain in force for existing frozen tasks. A new contract may opt
-into `execution.policy=GEMINI_FIRST_V1`. Its `prepared`, `local_synthetic`,
-`rationale`, `design_sessions` and `browser_required` fields are frozen with it.
+into `execution.policy=GEMINI_FIRST_V1`. The literal policy name is retained for v10
+schema compatibility; it means the configured Google worker is preferred and does not
+imply use of the legacy Gemini CLI. Its `prepared`, `local_synthetic`, `rationale`,
+`design_sessions` and `browser_required` fields are frozen with it.
 Lead inspects actual code before setting prepared; it means the implementation
 approach, scope and checks are settled. Prepared work uses the worker by default,
 including complex work; elevated work additionally requires local synthetic data.
 Unprepared complex/elevated work uses senior. Elevated tasks in this policy require
 an explicitly configured elevated reviewer, never a silent ordinary-review fallback.
-Gemini-first bridge configurations include that reviewer even for initially LOW
+Google-worker bridge configurations include that reviewer even for initially LOW
 tasks so later risk elevation does not require changing the checkpoint configuration.
-Gemini-first review records bind effective risk, reviewer tier and the configured
+Google-worker review records bind effective risk, reviewer tier and the configured
 reviewer binding digest. Risk elevation needs a fresh elevated review even at the
 same head. Cached readiness is revalidated; material findings go to bounded repair,
 not to another approval attempt without implementation repair.
@@ -69,9 +86,10 @@ Design participants cannot review that feature. Lead may obtain at most one seni
 design consultation before freezing the contract and records its session identity;
 consultation does not reset or extend implementation repair budgets. Missing design
 decisions after that consultation are a technical blocker or a product question.
-The intended account profile is Sol Medium Lead, Gemini Flash High worker, Astra
-senior, Terra Xhigh ordinary reviewer and independent Astra elevated reviewer.
-Names are preferences, not capability evidence; CLI IDs and effort require probes.
+The intended execution profile is a capable Lead, configured Google fast worker,
+configured senior, ordinary reviewer and independent elevated reviewer. Exact CLI IDs,
+model IDs and effort require capability probes; product names are preferences, not
+evidence of capability.
 Two repair rounds at the initial tier, then at most one senior implementation pass.
 Any unresolved material failure after that => BLOCKED_TECHNICAL, preserved checkpoint.
 A reviewer finding causes repair, not a debate loop. A new scope revision must not
@@ -87,7 +105,7 @@ output. A process exit 0 alone is not product acceptance. Review and Owner accep
 bind to the same head/hash. A later edit invalidates them.
 An elevated-risk review records completed risk checks and their result in its summary.
 Fresh-context review is organizational independence, not OS-level isolation.
-For Gemini-first user-visible tasks with browser_required, readiness also requires
+For Google-worker-first user-visible tasks with browser_required, readiness also requires
 ui_evidence containing matching head/contract hash, a localhost URL, PASS status
 and nonempty checks with action, observed result and passed=true. Missing evidence
 is WAITING_CAPABILITY, not a repair request or Owner acceptance. Lead verifies the
@@ -102,10 +120,9 @@ For source inspection, Lead may predeclare exact test-file paths and SHA-256
 content approvals for personally inspected synthetic test data in bridge config.
 Their JSON digest is frozen as execution.source_approvals_sha256 in the task and
 checked against the config before work. The checkpoint also binds configuration;
-changed bytes
-invalidate them. No directory-wide secret exemption is supported. Recognizable
-credential formats and current secret environment values remain blocked even with
-an approval. Runtime output and argument redaction remain unchanged.
+changed bytes invalidate them. No directory-wide secret exemption is supported.
+Recognizable credential formats and current secret environment values remain blocked
+even with an approval. Runtime output and argument redaction remain unchanged.
 Review packets persist the exact inspected source, base/head content hashes,
 declared context and gate sources alongside the source digest. Missing required
 source context or oversized packets stop review. Technical review may pass before
@@ -146,7 +163,7 @@ handoff/repair pilot on Windows. Merely editing a config field is insufficient.
 Activation evidence binds the tested bridge source, account bindings and pilot state.
 The accepted pilot uses both actual subscription providers, a fresh review, a
 reviewer-or-gate repair and final evidence. Before activation, the Lead runs the
-deterministic quota drill against that accepted pilot. The drill exercises the same
+ deterministic quota drill against that accepted pilot. The drill exercises the same
 preflight handling: it records `WAITING_QUOTA`, keeps the checkpoint unchanged, and
 requires a fresh safe preflight before work could continue. It does not call a
 provider or prove a provider's live quota-error wording; a later natural quota event
