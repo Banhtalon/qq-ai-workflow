@@ -2,13 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {writeFile,readFile,mkdir,unlink} from 'node:fs/promises';
+import {writeFile,readFile,mkdir,unlink,cp} from 'node:fs/promises';
+import {pathToFileURL} from 'node:url';
 import {fixture} from './fixture.mjs';
 import {git,readJson,writeJson,freeze,verify,readiness} from '../scripts/lib/workflow.mjs';
 import {execute,subscriptionEnv,failureStatus} from '../scripts/lib/bridge-process.mjs';
 import {redactText} from '../scripts/lib/redact.mjs';
 import {parseProtocol,invocation,assertSubscriptionSettings,protocolMetadata} from '../scripts/lib/bridge-adapters.mjs';
-import {runBridge,acquire,reviewSource,quotaDrill,activate,sourceAllowed,validateConfig,loadReviewSource,configHash} from '../scripts/lib/bridge.mjs';
+import {verifyReceiptChain} from '../scripts/lib/receipts.mjs';
+import {runBridge,acquire,reviewSource,quotaDrill,activate,sourceAllowed,validateConfig,loadReviewSource,configHash,inspect} from '../scripts/lib/bridge.mjs';
 
 const windowsOnly={skip:process.platform==='win32'?false:'requires a real Windows runtime'};
 
@@ -56,6 +58,38 @@ test('real subprocess worker -> gates -> independent review -> repair -> final r
     const snapshots=[];for(const d of packetDirs.filter(d=>d.isDirectory())){try{snapshots.push(await readJson(path.join(f.packetDir,d.name,'review-source.json')));}catch(e){if(e.code!=='ENOENT')throw e;}}
     assert.ok(snapshots.some(p=>createHash('sha256').update(JSON.stringify(p)).digest('hex')===call.source_sha256));
   }finally{await f.cleanup();}
+});
+
+test('run preflight probes and work share one receipt chain without overwriting repeated probes',async()=>{
+ const f=await setup('pass');try{
+  const state=await f.run();assert.equal(state.status,'READY_FOR_OWNER');
+  await inspect(f.repo,f.config,path.join(f.packetDir,'capabilities'),true,undefined,f.packetDir);
+  const verified=await verifyReceiptChain(f.packetDir);assert.equal(verified.ok,true);
+  const chain=await readJson(path.join(f.packetDir,'.receipts-chain.json'));
+  const probes=chain.entries.filter(entry=>entry.path.startsWith('capabilities/'));
+  const work=chain.entries.filter(entry=>/^[^/]+\/receipts\/execution\.json$/.test(entry.path));
+  assert.equal(probes.length,6);assert.ok(work.length>=1);assert.equal(new Set(probes.map(entry=>entry.path)).size,6);
+  assert.equal(verified.count,chain.entries.length);
+ }finally{await f.cleanup();}
+});
+
+test('changing only copied receipts source invalidates checkpoint, accepted pilot and activation evidence',windowsOnly,async()=>{
+ const f=await setup('repair');try{
+  const libCopy=path.join(f.dir,'bridge-lib-copy');await cp(new URL('../scripts/lib/',import.meta.url),libCopy,{recursive:true});
+  const bridgePath=path.join(libCopy,'bridge.mjs');const bridgeSource=await readFile(bridgePath,'utf8');await writeFile(bridgePath,bridgeSource.includes('export async function bridgeHash()')?bridgeSource:bridgeSource.replace('async function bridgeHash()','export async function bridgeHash()'));
+  const copied=await import(pathToFileURL(path.join(libCopy,'bridge.mjs')).href+'?receipt-hash-fixture');
+  const oldHash=await copied.bridgeHash();
+  const pilot=await copied.runBridge({cwd:f.repo,taskPath:f.taskPath,config:f.config,packetDir:f.packetDir,pilot:true});assert.equal(pilot.status,'READY_FOR_OWNER');
+  const stored=await readJson(path.join(f.packetDir,'state.json'));stored.history.find(h=>h.phase==='worker').provider='google';stored.capability_history[0].reports.find(r=>r.role==='worker').provider='google';await writeJson(path.join(f.packetDir,'state.json'),stored);
+  const activationDir=path.join(f.dir,'activation');await copied.quotaDrill(f.config,f.packetDir,activationDir);await copied.activate(f.config,f.packetDir,activationDir);
+  const checkpointDir=path.join(f.dir,'checkpoint-copy');await cp(f.packetDir,checkpointDir,{recursive:true});
+  const receiptsPath=path.join(libCopy,'receipts.mjs');await writeFile(receiptsPath,(await readFile(receiptsPath,'utf8'))+'\n// fixture-only receipt hash change\n');
+  const newHash=await copied.bridgeHash();assert.notEqual(newHash,oldHash);
+  const resumed=await copied.runBridge({cwd:f.repo,taskPath:f.taskPath,config:f.config,packetDir:checkpointDir,pilot:true,resume:true});assert.equal(resumed.status,'BLOCKED_TECHNICAL');assert.match(resumed.error,/checkpoint\/config mismatch/);
+  await assert.rejects(copied.quotaDrill(f.config,f.packetDir,path.join(f.dir,'stale-drill')),/pilot is stale/);
+  await assert.rejects(copied.activate(f.config,f.packetDir,activationDir),/pilot is stale/);
+  await assert.rejects(copied.runBridge({cwd:f.repo,taskPath:f.taskPath,config:{...f.config,mode:'LOCAL_AUTO'},packetDir:activationDir,pilot:false}),/stale live activation receipt/);
+ }finally{await f.cleanup();}
 });
 
 test('exact inspected test approval is byte scoped and never allows recognizable credentials',async()=>{

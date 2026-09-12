@@ -11,10 +11,16 @@ const canonical=value=>JSON.stringify(safe(value));
 export function promptHash(prompt){return sha256(prompt??'');}
 export function normalizeUsage(usage,provider){
   if(!usage||typeof usage!=='object')return {source:'unavailable',input_tokens:null,output_tokens:null,reasoning_tokens:null,cached_tokens:null,total_tokens:null};
-  const pick=(...keys)=>{for(const key of keys)if(Number.isFinite(usage[key]))return usage[key];return null;};
-  const input_tokens=pick('input_tokens','inputTokens','prompt_tokens','promptTokens');const output_tokens=pick('output_tokens','outputTokens','completion_tokens','completionTokens');
-  const reasoning_tokens=pick('reasoning_tokens','reasoningTokens');const cached_tokens=pick('cached_tokens','cachedTokens','cache_read_input_tokens','cacheReadInputTokens');
-  const explicit_total=pick('total_tokens','totalTokens');const total_tokens=explicit_total===null&&input_tokens!==null&&output_tokens!==null?input_tokens+output_tokens:explicit_total;
+  const pick=(value,...keys)=>{for(const key of keys)if(Number.isFinite(value?.[key]))return value[key];return null;};
+  const tokens=usage.tokens&&typeof usage.tokens==='object'?usage.tokens:null;
+  const modelTokens=usage.models&&typeof usage.models==='object'?Object.values(usage.models).map(model=>model?.tokens&&typeof model.tokens==='object'?model.tokens:null):[];
+  const sumModels=keys=>{if(!modelTokens.length)return null;let total=0;for(const value of modelTokens){const counter=pick(value,...keys);if(counter===null)return null;total+=counter;}return total;};
+  const direct=(...keys)=>pick(usage,...keys)??pick(tokens,...keys);
+  const input_tokens=direct('input_tokens','inputTokens','prompt_tokens','promptTokens','prompt')??sumModels(['input_tokens','inputTokens','prompt_tokens','promptTokens','prompt']);
+  const output_tokens=direct('output_tokens','outputTokens','completion_tokens','completionTokens','candidates')??sumModels(['output_tokens','outputTokens','completion_tokens','completionTokens','candidates']);
+  const reasoning_tokens=direct('reasoning_tokens','reasoningTokens','thoughts')??sumModels(['reasoning_tokens','reasoningTokens','thoughts']);
+  const cached_tokens=direct('cached_tokens','cachedTokens','cached_input_tokens','cachedInputTokens','cache_read_input_tokens','cacheReadInputTokens','cached')??sumModels(['cached_tokens','cachedTokens','cached_input_tokens','cachedInputTokens','cache_read_input_tokens','cacheReadInputTokens','cached']);
+  const explicit_total=direct('total_tokens','totalTokens','total')??sumModels(['total_tokens','totalTokens','total']);const total_tokens=explicit_total===null&&input_tokens!==null&&output_tokens!==null?input_tokens+output_tokens:explicit_total;
   const hasAny=[input_tokens,output_tokens,reasoning_tokens,cached_tokens,total_tokens].some(v=>v!==null);
   return {source:hasAny?(provider??'provider'):'unavailable',input_tokens,output_tokens,reasoning_tokens,cached_tokens,total_tokens};
 }

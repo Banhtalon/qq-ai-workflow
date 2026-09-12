@@ -5,7 +5,7 @@ import {mkdtemp,writeFile,readFile,rm,mkdir,readdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import {beginInvocation,finishInvocation,normalizeUsage,promptHash,verifyReceiptChain} from '../scripts/lib/receipts.mjs';
-import {doctor} from '../scripts/lib/bridge-adapters.mjs';
+import {doctor,parseProtocol} from '../scripts/lib/bridge-adapters.mjs';
 
 async function fixture(){
   const dir=await mkdtemp(path.join(tmpdir(),'qq-receipts-'));const repo=path.join(dir,'repo');await mkdir(repo);
@@ -23,6 +23,27 @@ test('execution receipt records provider, requested/observed models, usage and c
 test('all six execution kinds are classified from actual workflow state',async()=>{const cases=[['probe','PROBE','probe',{phase:'worker',repair_rounds:0,senior_passes:0},{}],['worker','WORK','worker',{phase:'worker',repair_rounds:0,senior_passes:0},{complexity:'SIMPLE',risk:'LOW',effective_risk:'LOW'}],['reviewer','REVIEW','reviewer',{phase:'reviewer',repair_rounds:0,senior_passes:0},{risk:'LOW',effective_risk:'LOW'}],['repair','REPAIR','worker',{phase:'worker',repair_rounds:1,senior_passes:0},{complexity:'SIMPLE',risk:'LOW',effective_risk:'LOW'}],['senior','SENIOR','worker',{phase:'worker',repair_rounds:2,senior_passes:1},{complexity:'SIMPLE',risk:'LOW',effective_risk:'LOW'}],['elevated_reviewer','ELEVATED_REVIEW','reviewer',{phase:'reviewer',repair_rounds:0,senior_passes:0},{risk:'ELEVATED',effective_risk:'ELEVATED'}]];for(const [label,expected,role,statePatch,taskPatch] of cases){const f=await fixture();try{await resetContext(f,statePatch,taskPatch);const binding={provider:'openai',cli:'codex',model:'fixture'};const ctx=await beginInvocation({packetDir:path.join(f.dir,label),role,binding,prompt:'p',started_at:'2026-09-12T10:00:00.000Z'});assert.equal(ctx.assignment.kind,expected);}finally{await f.cleanup();}}});
 
 test('usage explicitly reports unavailable instead of inventing quota',()=>{const usage=normalizeUsage(null,'google');assert.deepEqual(usage,{source:'unavailable',input_tokens:null,output_tokens:null,reasoning_tokens:null,cached_tokens:null,total_tokens:null});assert.equal(promptHash('x').length,64);});
+
+test('usage normalization preserves Gemini model totals, Codex cache counters, missing fields and zeroes',()=>{
+ assert.deepEqual(normalizeUsage({models:{'flash-fixture':{tokens:{prompt:12,candidates:4}}}},'google'),{source:'google',input_tokens:12,output_tokens:4,reasoning_tokens:null,cached_tokens:null,total_tokens:16});
+ assert.deepEqual(normalizeUsage({models:{a:{tokens:{prompt:10,candidates:3,cached:2,thoughts:1,total:13}},b:{tokens:{prompt:5,candidates:2,cached:1,thoughts:4,total:7}}}},'google'),{source:'google',input_tokens:15,output_tokens:5,reasoning_tokens:5,cached_tokens:3,total_tokens:20});
+ assert.deepEqual(normalizeUsage({models:{a:{tokens:{prompt:10,candidates:3,total:13}}},total_tokens:99},'google'),{source:'google',input_tokens:10,output_tokens:3,reasoning_tokens:null,cached_tokens:null,total_tokens:99});
+ assert.deepEqual(normalizeUsage({models:{a:{tokens:{prompt:10,candidates:3}},b:{tokens:{candidates:2}}}},'google'),{source:'google',input_tokens:null,output_tokens:5,reasoning_tokens:null,cached_tokens:null,total_tokens:null});
+ assert.deepEqual(normalizeUsage({models:{a:{tokens:{prompt:10,candidates:3}},b:{}}},'google'),{source:'unavailable',input_tokens:null,output_tokens:null,reasoning_tokens:null,cached_tokens:null,total_tokens:null});
+ assert.deepEqual(normalizeUsage({models:{a:{tokens:{prompt:10,candidates:3,cached:2}},b:{tokens:{prompt:5,candidates:2}}}},'google'),{source:'google',input_tokens:15,output_tokens:5,reasoning_tokens:null,cached_tokens:null,total_tokens:20});
+ assert.deepEqual(normalizeUsage({models:{a:{tokens:{prompt:0,candidates:0,cached:0,thoughts:0,total:0}},b:{tokens:{prompt:0,candidates:0,cached:0,thoughts:0,total:0}}}},'google'),{source:'google',input_tokens:0,output_tokens:0,reasoning_tokens:0,cached_tokens:0,total_tokens:0});
+ assert.deepEqual(normalizeUsage({input_tokens:99,output_tokens:8,cached_input_tokens:0,total_tokens:107,models:{a:{tokens:{}},b:{}}},'google'),{source:'google',input_tokens:99,output_tokens:8,reasoning_tokens:null,cached_tokens:0,total_tokens:107});
+ assert.deepEqual(normalizeUsage({input_tokens:12,cached_input_tokens:7,output_tokens:4},'openai'),{source:'openai',input_tokens:12,output_tokens:4,reasoning_tokens:null,cached_tokens:7,total_tokens:16});
+ assert.deepEqual(normalizeUsage({input_tokens:0,output_tokens:0,cached_input_tokens:0,total_tokens:0},'openai'),{source:'openai',input_tokens:0,output_tokens:0,reasoning_tokens:null,cached_tokens:0,total_tokens:0});
+ assert.deepEqual(normalizeUsage({},'google'),{source:'unavailable',input_tokens:null,output_tokens:null,reasoning_tokens:null,cached_tokens:null,total_tokens:null});
+});
+
+test('Gemini parseProtocol partial telemetry reaches the final receipt without invented counters',async()=>{const f=await fixture();try{
+ const protocol={session_id:'gemini-session',response:JSON.stringify({verdict:'PASS',summary:'ok',material_findings:[],risk_checks_completed:false}),stats:{models:{'flash-fixture':{tokens:{prompt:12,candidates:4,cached:2}},'pro-fixture':{tokens:{prompt:8,candidates:2}}}}};
+ const parsed=parseProtocol('google',JSON.stringify(protocol),'gemini');const packet=path.join(f.dir,'gemini-integration');const binding={provider:'google',cli:'gemini',model:'flash-fixture'};const prompt='fixture prompt';const started_at='2026-09-12T10:00:00.000Z';
+ const context=await beginInvocation({packetDir:packet,role:'worker',binding,prompt,started_at});const receipt=await finishInvocation({packetDir:packet,receiptRoot:f.dir,role:'worker',binding,prompt,result:parsed,started_at,finished_at:'2026-09-12T10:00:01.000Z',context});
+ assert.deepEqual(receipt.usage,{source:'google',input_tokens:20,output_tokens:6,reasoning_tokens:null,cached_tokens:null,total_tokens:26});assert.equal((await verifyReceiptChain(f.dir)).ok,true);
+}finally{await f.cleanup();}});
 
 test('model output that echoes the prompt is sanitized in receipts',async()=>{const f=await fixture();try{const packet=path.join(f.dir,'echo');const prompt='SECRET FULL TASK PROMPT';const binding={provider:'openai',cli:'codex',model:'fixture'};const ctx=await beginInvocation({packetDir:packet,role:'worker',binding,prompt,started_at:'2026-09-12T10:00:00.000Z'});const receipt=await finishInvocation({packetDir:packet,role:'worker',binding,prompt,result:{session_id:'s',status:null,result:{summary:`echo ${prompt}`,material_findings:[prompt]}},started_at:'2026-09-12T10:00:00.000Z',finished_at:'2026-09-12T10:00:01.000Z',context:ctx});assert.equal(JSON.stringify(receipt).includes(prompt),false);}finally{await f.cleanup();}});
 
