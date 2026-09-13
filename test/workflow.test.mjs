@@ -1,14 +1,40 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {writeFile,readFile} from "node:fs/promises";
+import {writeFile,readFile,mkdtemp,rm} from "node:fs/promises";
 import {spawnSync} from "node:child_process";
 import {fileURLToPath} from "node:url";
 import path from "node:path";
+import os from "node:os";
 import {fixture,review,profile} from "./fixture.mjs";
 import {validateTask,validateProfile,contractHash,writeJson,readJson,freeze,verify,readiness,route,git} from "../scripts/lib/workflow.mjs";
 import {runRedacted,redactText,argvForPlatform} from "../scripts/lib/redact.mjs";
 
 const cli=fileURLToPath(new URL("../scripts/workflow.mjs",import.meta.url));
+test("init creates a Controlled Delegation draft from current HEAD and never overwrites it",async()=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),"qq-init-")),repo=path.join(dir,"repo");
+ try{
+  git(dir,"init","-b","main",repo);git(repo,"config","user.name","Fixture");git(repo,"config","user.email","fixture@example.invalid");
+  await writeFile(path.join(repo,"README.md"),"fixture\n");
+  await writeFile(path.join(repo,".gitignore"),".workflow-local/\n");
+  git(repo,"add",".");git(repo,"commit","-m","base");
+  const head=git(repo,"rev-parse","HEAD").trim();
+  const first=spawnSync(process.execPath,[cli,"init","TASK-123"],{cwd:repo,encoding:"utf8"});
+  assert.equal(first.status,0,first.stderr);
+  const result=JSON.parse(first.stdout),taskPath=path.join(repo,".workflow-local","TASK-123.json");
+  const task=JSON.parse(await readFile(taskPath,"utf8"));
+  assert.equal(result.status,"INITIALIZED");
+  assert.equal(result.task_path,".workflow-local/TASK-123.json");
+  assert.equal(task.schema_version,"qq.workflow.task.v10.1");
+  assert.equal(task.execution?.policy,"CONTROLLED_DELEGATION_V1");
+  assert.equal(task.base_sha,head);
+  assert.equal(task.task_id,"TASK-123");
+  assert.equal(git(repo,"status","--porcelain","--untracked-files=all").trim(),"");
+  const before=await readFile(taskPath,"utf8");
+  const second=spawnSync(process.execPath,[cli,"init","TASK-123"],{cwd:repo,encoding:"utf8"});
+  assert.notEqual(second.status,0);
+  assert.equal(await readFile(taskPath,"utf8"),before);
+ }finally{await rm(dir,{recursive:true,force:true});}
+});
 test("CLI rejects legacy secret-bearing gates without creating or overwriting evidence",async()=>{
  const marker="synthetic-review-marker-012345";
  for(const extra of [["token="+marker],["--token",marker],[marker]]){

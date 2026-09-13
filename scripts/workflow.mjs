@@ -1,11 +1,29 @@
 import path from "node:path";
+import {mkdir,readFile,writeFile} from "node:fs/promises";
+import {fileURLToPath} from "node:url";
 import {readJson,writeJson,freeze,verify,route,readiness,assertContract,cleanHead,git,executionRoute} from "./lib/workflow.mjs";
 import {validateConfig,loadReviewSource,configHash} from './lib/bridge.mjs';
 import {redactText} from "./lib/redact.mjs";
 const [command,...args]=process.argv.slice(2);
+const toolkitRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"..");
+async function initControlledTask(taskId){
+  if(!/^TASK-[A-Z0-9_-]+$/i.test(taskId??""))throw new Error("init requires task id like TASK-123");
+  const root=git(process.cwd(),"rev-parse","--show-toplevel").trim();
+  const baseSha=git(root,"rev-parse","HEAD").trim();
+  const template=JSON.parse(await readFile(path.join(toolkitRoot,".ai-workflow","templates","task.json"),"utf8"));
+  const task={...template,task_id:taskId,base_sha:baseSha,candidate_head:null,contract_sha256:null};
+  const dir=path.join(root,".workflow-local"),target=path.join(dir,taskId+".json");
+  const rel=path.relative(root,target);
+  try{git(root,"check-ignore","--no-index","--",rel);}catch{throw new Error(".workflow-local must be gitignored before init");}
+  await mkdir(dir,{recursive:true});
+  try{await writeFile(target,JSON.stringify(task,null,2)+"\n",{flag:"wx"});}
+  catch(error){if(error.code==="EEXIST")throw new Error(`task already exists: .workflow-local/${taskId}.json`);throw error;}
+  return {status:"INITIALIZED",task_id:taskId,task_path:`.workflow-local/${taskId}.json`,base_sha:baseSha,policy:task.execution.policy};
+}
 try{
   let result;
-  if(command==="freeze"&&args.length===1)result=await freeze(args[0]);
+  if(command==="init"&&args.length===1)result=await initControlledTask(args[0]);
+  else if(command==="freeze"&&args.length===1)result=await freeze(args[0]);
   else if(command==="route"&&args.length>=2){
     const flags=args.slice(2);
     if(flags.some(f=>!["--needs-repair","--quota-exhausted"].includes(f)))throw new Error("unknown route flag");
@@ -29,7 +47,7 @@ try{
       goal:t.goal,local_url:t.ui_evidence?.head===t.candidate_head&&t.ui_evidence?.contract_sha256===t.contract_sha256?t.ui_evidence.url:null};
     if(!["DONE","READY_FOR_OWNER"].includes(result.status))process.exitCode=1;
   }else{
-    console.log("freeze <task> | route <task> <profile> | verify <task> <repo> <evidence> | status <task> <evidence> <review> <repo> [bridge-config]");
+    console.log("init <TASK-ID> | freeze <task> | legacy: route <task> <profile> | verify <task> <repo> <evidence> | status <task> <evidence> <review> <repo> [bridge-config]");
     if(command!=="help")process.exitCode=64;
   }
   if(result)console.log(redactText(JSON.stringify(result,null,2)));
