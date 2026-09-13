@@ -93,7 +93,12 @@ export function cleanHead(cwd,expected){
   return head;
 }
 export async function freeze(taskPath){
-  const t=validateTask(await readJson(taskPath));
+  const raw=await readJson(taskPath);
+  if(raw?.schema_version==='qq.workflow.task.v10.1'){
+    const {freezeControlledTask}=await import('./controlled-bridge.mjs');
+    return freezeControlledTask(taskPath,raw);
+  }
+  const t=validateTask(raw);
   assertSafeGateMetadata(t.gates);
   const hash=contractHash(t);
   await writeJson(taskPath+".lock.json",{schema_version:"qq.workflow.lock.v10",task_id:t.task_id,revision:t.revision,contract_sha256:hash,effective_risk_floor:t.risk},"wx");

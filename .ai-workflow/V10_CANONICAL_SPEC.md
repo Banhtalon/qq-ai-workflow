@@ -1,5 +1,5 @@
 # QQ AI Workflow v10 — canonical local contract
-Version 10.0.0-rc.2. This revision intentionally replaces v9 for adopted v10 tasks.
+Version 10.1.0-rc.1 (supporting v10 and v10.1 tasks). This revision intentionally replaces v9 for adopted v10 tasks.
 Scope: one Owner, local personal projects, subscription access. Not a production
 or adversarial agent isolation framework. CLI connection is a separate stage.
 
@@ -82,6 +82,24 @@ Google-worker review records bind effective risk, reviewer tier and the configur
 reviewer binding digest. Risk elevation needs a fresh elevated review even at the
 same head. Cached readiness is revalidated; material findings go to bounded repair,
 not to another approval attempt without implementation repair.
+Tasks adopting versioned schema `qq.workflow.task.v10.1` may declare
+`execution.policy=CONTROLLED_DELEGATION_V1`. This policy is subscription-only and
+uses a designated Gemini 3.8 Flash High worker, an independent Terra Xhigh ordinary
+reviewer, and exactly `gpt-6-astra` at low effort for senior escalation or elevated
+review. Astra never escalates to Astra; an unavailable elevated reviewer returns
+WAIT/STOP and never falls back to Terra.
+The controlled lanes are FAST, NORMAL and ELEVATED_PROCESS; risk remains LOW or
+ELEVATED. FAST is documentation-only with a frozen allowlist and a bound waiver;
+out-of-scope or behavioral content stops with SCOPE_VIOLATION. User-visible tasks
+need a frozen local Product Check; unavailable Product Check is UNVERIFIED/WAIT and
+does not consume implementation repair budget. Controlled repair budgets are tracked
+by origin and never reset by a new scope revision; supplemental recovery requires
+explicit Owner authorization and a dedicated budget ledger.
+For every controlled invocation, the Bridge writes an assignment receipt before
+invocation and an execution receipt on every terminal path. Raw invocation identity
+is authoritative; candidate custody references its chain root, receipt ID and hash.
+Missing provider metadata stays null or unavailable; matching fields that conflict
+fail closed. A valid later chain append does not invalidate an earlier receipt.
 Design participants cannot review that feature. Lead may obtain at most one senior
 design consultation before freezing the contract and records its session identity;
 consultation does not reset or extend implementation repair budgets. Missing design
