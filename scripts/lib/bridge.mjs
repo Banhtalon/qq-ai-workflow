@@ -82,6 +82,10 @@ export async function acquire(cwd) {
   return async()=>{await fd.close();await unlink(file);};
 }
 export async function inspect(cwd,config,packetDir,probe=false,signal,receiptRoot=packetDir) {
+  if(config?.schema_version==='qq.bridge.v2'){
+    const {inspectControlled}=await import('./controlled-bridge.mjs');
+    return inspectControlled(cwd,config,packetDir,probe,signal);
+  }
   validateConfig(config);const head=cleanHead(cwd);const reports=[];
   for(const role of ['worker','reviewer','senior',...(config.elevated_reviewer?['elevated_reviewer']:[])]){
     const report=await doctor(config[role],{cwd,packetDir:path.join(packetDir,role),probe,signal,receiptRoot});
@@ -124,7 +128,18 @@ function separateOutput(pilotDir,outputDir) {
   return target;
 }
 
+export async function isControlledPilot(pilotDir,config=null){
+  if(config?.schema_version==='qq.bridge.v2')return true;
+  try{const s=await readJson(path.join(pilotDir,'state.json'));if(s?.schema_version==='qq.bridge.controlled-state.v1'||s?.policy==='CONTROLLED_DELEGATION_V1')return true;}catch{}
+  try{const r=await readJson(path.join(pilotDir,'receipt.json'));if(r?.policy==='CONTROLLED_DELEGATION_V1')return true;}catch{}
+  return false;
+}
+
 export async function quotaDrill(config,pilotDir,outputDir) {
+  if(await isControlledPilot(pilotDir,config)){
+    const {controlledQuotaDrill}=await import('./controlled-bridge.mjs');
+    return controlledQuotaDrill(config,pilotDir,outputDir);
+  }
   const pilot=await acceptedPilot(config,pilotDir);
   outputDir=separateOutput(pilot.pilotDir,outputDir);
   const before=JSON.stringify(pilot.s),history_digest=hash(pilot.s.history);
@@ -152,6 +167,10 @@ async function checkedQuotaDrill(pilot,outputDir) {
 }
 
 export async function activate(config,pilotDir,outputDir) {
+  if(await isControlledPilot(pilotDir,config)){
+    const {controlledActivate}=await import('./controlled-bridge.mjs');
+    return controlledActivate(config,pilotDir,outputDir);
+  }
   const pilot=await acceptedPilot(config,pilotDir);
   outputDir=separateOutput(pilot.pilotDir,outputDir);
   const drill=await checkedQuotaDrill(pilot,outputDir);
@@ -207,7 +226,17 @@ function protectedPaths(t,config) {
 }
 function checkpoint(cwd) {return {head:cleanHead(cwd),branch:git(cwd,'symbolic-ref','--short','HEAD').trim()};}
 
-export async function runBridge({cwd,taskPath,config,packetDir,pilot=false,resume=false,signal}) {
+export async function runBridge(options) {
+  let {cwd,taskPath,config,packetDir,pilot=false,resume=false,signal}=options;
+  if(config?.schema_version==='qq.bridge.v2'){
+    const {runControlledBridge}=await import('./controlled-bridge.mjs');
+    return runControlledBridge(options);
+  }
+  let peekTask=null;try{peekTask=await readJson(taskPath);}catch{}
+  if(peekTask?.schema_version==='qq.workflow.task.v10.1'||peekTask?.execution?.policy==='CONTROLLED_DELEGATION_V1'){
+    const {runControlledBridge}=await import('./controlled-bridge.mjs');
+    return runControlledBridge(options);
+  }
   cwd=path.resolve(cwd);taskPath=path.resolve(taskPath);packetDir=path.resolve(packetDir);validateConfig(config);
   await mkdir(packetDir,{recursive:true});
   const statePath=path.join(packetDir,'state.json'),release=await acquire(cwd);

@@ -1,10 +1,10 @@
 {
   "name": "qq-ai-workflow",
-  "version": "10.0.0-rc.2",
+  "version": "10.1.0-rc.1",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test test/workflow.test.mjs test/bridge.test.mjs test/fast-lane.test.mjs test/documentation.test.mjs test/gemini-first.test.mjs test/receipts.test.mjs",
+    "test": "node --test test/workflow.test.mjs test/bridge.test.mjs test/fast-lane.test.mjs test/documentation.test.mjs test/gemini-first.test.mjs test/receipts.test.mjs test/controlled-bridge.test.mjs test/execution-policy.test.mjs test/execution-receipt.test.mjs test/execution-authorization.test.mjs",
     "bridge": "node scripts/bridge.mjs",
     "fast-lane": "node scripts/fast-lane.mjs",
     "workflow:check": "node scripts/check-kit.mjs",
