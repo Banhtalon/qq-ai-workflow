@@ -12,6 +12,8 @@ Cầu nối dùng Node 20+, Git, Codex CLI và Antigravity CLI đã có trên m�
 node scripts/bridge.mjs doctor <bridge-config.json> <repo> <doctor-packets> --probe
 node scripts/bridge.mjs pilot <bridge-config.json> <frozen-task.json> <repo> <run-packets>
 node scripts/bridge.mjs status <run-packets>
+node scripts/bridge.mjs report <run-packets>
+node scripts/bridge.mjs report <run-packets> --audience lead --format json
 node scripts/bridge.mjs resume <bridge-config.json> <frozen-task.json> <repo> <run-packets> --pilot
 node scripts/bridge.mjs quota-drill <bridge-config.json> <accepted-pilot-packets> <activation-packets>
 node scripts/bridge.mjs activate <bridge-config.json> <accepted-pilot-packets> <target-run-packets>
@@ -38,7 +40,30 @@ truy cập thật vẫn bị chặn. Các chi tiết giới hạn nằm trong ca
 Task Google-worker-first ghi `execution.source_approvals_sha256` bằng SHA-256 của
 `JSON.stringify(config.synthetic_source_approvals)` trước khi freeze.
 
-## Khôi phục
+## Báo cáo gọn cho dự án nhỏ
+
+`report` đọc hồ sơ hiện có, xuất stdout và không gọi provider hoặc ghi packet.
+Mặc định là Markdown cho Owner; `--audience lead` thêm thông tin kỹ thuật,
+`--format json` dùng cho công cụ. Đầu ra tối đa 8 KiB UTF-8, có thông báo khi
+rút gọn và tham chiếu hồ sơ đầy đủ. Đây là bản tóm tắt dữ liệu đã lưu, tách
+biệt với kết quả kiểm chứng readiness và bằng chứng mới.
+
+Sol/Lead chạy lệnh và gửi bản Markdown mặc định cho Owner tại mốc cần quyết
+định hoặc thử sản phẩm. Owner không cần chạy CLI hay đọc packet. Script tạo
+báo cáo từ hồ sơ đã lưu, không gọi Gemini/Codex; báo cáo ghi rõ ai thực hiện
+bước tiếp theo. Bản Lead/JSON dành cho Sol hoặc tác nhân điều phối kỹ thuật.
+
+Theo [spec](V10_CANONICAL_SPEC.md#small-project-execution-and-reporting), Gemini
+thực hiện vòng code–test–sửa khi routing hiện hành cho phép. Lead đọc bản báo
+cáo tại mốc hoàn thành hoặc khi có blocker; reviewer tiếp tục nhận source và
+bằng chứng đầy đủ. Test tập trung dùng trong lúc sửa, bộ gate đã chốt dùng
+ở cuối tính năng. Bộ test nội bộ V10 dành cho việc kiểm tra bộ công cụ này.
+
+Usage lấy từ receipt của provider; unavailable biểu thị thiếu dữ liệu. Kích
+thước báo cáo đo lượng văn bản, không quy đổi thành token hoặc quota. Chênh
+lệch token thực tế cần một pilot riêng dùng tài khoản thật.
+
+## Tiếp tục từ hồ sơ
 
 Lệnh trạng thái cho packet Google-worker-first: `node scripts/workflow.mjs status <task> <evidence> <review> <repo> <bridge-config>`. Tham số cuối cung cấp cấu hình reviewer kỳ vọng cho cùng phép kiểm tra readiness được bridge sử dụng.
 
