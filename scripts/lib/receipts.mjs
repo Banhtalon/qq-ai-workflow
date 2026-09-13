@@ -1,5 +1,5 @@
 import path from 'node:path';
-import {mkdir,readFile,rename,open,readdir} from 'node:fs/promises';
+import {mkdir,readFile,rename,open,readdir,lstat} from 'node:fs/promises';
 import {createHash,randomUUID} from 'node:crypto';
 import {safe} from './bridge-process.mjs';
 import {executionRoute} from './workflow.mjs';
@@ -52,10 +52,10 @@ export async function finishInvocation({packetDir,receiptRoot,role,receiptKind,b
   const target=path.join(packetDir,'receipts','execution.json');const chained=await appendChain(receiptRoot??root,execution,target);await atomicJson(target,chained);return chained;
 }
 
-async function executionFiles(root){const found=[];async function walk(dir){for(const entry of await readdir(dir,{withFileTypes:true})){if(entry.name.startsWith('.'))continue;const full=path.join(dir,entry.name);if(entry.isDirectory())await walk(full);else if(entry.name==='execution.json')found.push(full);}}await walk(root);return found.sort();}
+async function executionFiles(root){const found=[];async function walk(dir){for(const entry of await readdir(dir,{withFileTypes:true})){if(entry.name.startsWith('.'))continue;const full=path.join(dir,entry.name);if(entry.isDirectory()){try{await readFile(path.join(full,'.receipts-chain.json'),'utf8');continue;}catch(error){if(error.code!=='ENOENT')throw error;}await walk(full);}else if(entry.name==='execution.json')found.push(full);}}await walk(root);return found.sort();}
 export async function verifyReceiptChain(root){
   const chain=await nextChain(root);if(chain.schema_version!==RECEIPT_SCHEMA_VERSION||!Array.isArray(chain.entries))return {ok:false,reason:'invalid chain metadata'};
-  const actual=new Map();for(const file of await executionFiles(root)){const value=JSON.parse(await readFile(file,'utf8'));const rel=path.relative(root,file).replaceAll(path.sep,'/');actual.set(rel,value);}
+  const actual=new Map();for(const file of await executionFiles(root)){const info=await lstat(file);if(!info.isFile()||info.isSymbolicLink())return {ok:false,reason:'receipt is not a regular file'};const value=JSON.parse(await readFile(file,'utf8'));const rel=path.relative(root,file).replaceAll(path.sep,'/');actual.set(rel,value);}
   if(actual.size!==chain.entries.length)return {ok:false,reason:'receipt count mismatch'};
   let previous=null;for(const entry of chain.entries){const receipt=actual.get(entry.path);if(!receipt)return {ok:false,reason:'missing receipt: '+entry.path};if(receipt.prev_receipt_sha256!==previous)return {ok:false,reason:'broken previous hash: '+entry.path};if(receipt.receipt_sha256!==entry.receipt_sha256||receiptHash(receipt)!==entry.receipt_sha256)return {ok:false,reason:'receipt hash mismatch: '+entry.path};previous=entry.receipt_sha256;}
   if(previous!==chain.last_receipt_sha256)return {ok:false,reason:'final chain pointer mismatch'};

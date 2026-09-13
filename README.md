@@ -1,5 +1,5 @@
 # QQ AI Workflow v10 — Personal Local
-Version: **10.0.0-rc.2** · Stage: **sequential CLI bridge; LOCAL_AUTO requires quota-drill activation**
+Version: **10.1.0-rc.1** · Stage: **sequential CLI bridge; LOCAL_AUTO requires quota-drill activation**
 
 Một Codex nhận yêu cầu, tự làm hoặc giao worker Google qua Antigravity CLI, kiểm thử,
 gọi reviewer độc lập, sửa lỗi và đưa bản dùng thử cho Owner. Dành cho một người dùng,

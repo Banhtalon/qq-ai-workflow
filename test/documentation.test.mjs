@@ -4,6 +4,9 @@ import {dirname,join,resolve} from "node:path";
 import test from "node:test";
 import {fileURLToPath} from "node:url";
 import {ENTRY_POINT_FILES,REFERENCE_GUIDANCE_FILES,guidanceRuleDriftTerms} from "../scripts/lib/documentation.mjs";
+import {assertCurrentVersionFiles} from "../scripts/lib/version-consistency.mjs";
+import {mkdir,mkdtemp,rm,writeFile} from "node:fs/promises";
+import {tmpdir} from "node:os";
 
 const workspace=resolve(dirname(fileURLToPath(import.meta.url)),"..");
 
@@ -41,4 +44,21 @@ test("canonical spec owns Fast Lane and LOCAL_AUTO conditions",()=>{
  const canonical=readFileSync(join(workspace,".ai-workflow/V10_CANONICAL_SPEC.md"),"utf8");
  assert.match(canonical,/Fast Lane only routes a clean documentation-only candidate/u);
  assert.match(canonical,/deterministic quota drill/u);
+});
+
+test("current version markers agree across the active sources",async()=>{
+ const result=await assertCurrentVersionFiles(workspace);
+ assert.equal(result.version,"10.1.0-rc.1");
+});
+
+test("current version check rejects a mismatched temporary fixture",async()=>{
+ const fixture=await mkdtemp(join(tmpdir(),"qq-version-check-"));
+ try{
+  await mkdir(join(fixture,".ai-workflow"),{recursive:true});
+  await writeFile(join(fixture,"VERSION"),"10.1.0-rc.1\n");
+  await writeFile(join(fixture,"package.json"),'{"version":"10.0.0-rc.2"}\n');
+  await writeFile(join(fixture,"README.md"),"Version: **10.1.0-rc.1** · historical references may differ\n");
+  await writeFile(join(fixture,".ai-workflow","V10_CANONICAL_SPEC.md"),"Version 10.1.0-rc.1 (supporting v10 tasks).\n");
+  await assert.rejects(()=>assertCurrentVersionFiles(fixture),/current version consistency check failed.*package\.json=10\.0\.0-rc\.2/u);
+ } finally {await rm(fixture,{recursive:true,force:true});}
 });

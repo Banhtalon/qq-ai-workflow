@@ -58,6 +58,38 @@ model name, and a provider name is not a role.
 9. Completion requires evidence, independent PASS, and acceptance if user-visible.
    Merge/publish remains a separate explicitly authorized action.
 
+## Small-project execution and reporting
+For new work, group related changes into one small, independently acceptable
+feature. Under the existing eligible Google-worker route, the worker handles
+implementation, relevant tests and bounded repairs. Lead checks the decisive
+source before freezing scope, risk and gates; worker reconnaissance is advisory.
+Lead intervenes at completion, a blocker, a budget boundary or a decision request,
+rather than repeatedly requesting progress. This adds no routing policy, changes
+no model binding, and does not make elevated work automatically worker-eligible.
+
+During implementation run affected tests; at completion run the agreed final
+gates. After repair refresh affected checks and final-head evidence/review. Never
+select gates by filename alone, weaken a frozen gate set, or reuse old-head PASS.
+Host projects need their own agreed tests, not this kit's internal test suite.
+
+The read-only bridge report is a derived, redacted summary, not a verifier,
+acceptance record or activation proof. Owner output describes progress, blockers
+and the next product action in plain language, including who acts next. Sol/Lead
+runs the deterministic report command and presents the Owner version; Owner is
+not expected to run the CLI or inspect packets. Lead output adds packet references, counters and
+provider-reported usage. Report output is bounded to 8 KiB UTF-8, including its
+truncation notice and references. Omitted detail must be disclosed; blockers
+cannot silently disappear. Missing usage remains unavailable, not zero, and
+bytes are not token or subscription-quota measurements. Requested model and
+observed model remain distinct. Full source and gate evidence remain available
+and mandatory for review under the existing contract.
+
+Resume uses the existing checkpoint and preflight. An uncertain in-flight action
+requires reconciliation, not automatic replay. A summary of saved work does not
+promise native provider-session memory restoration. Existing frozen tasks,
+repair budgets, FAST eligibility, Product Check, independent review, Owner
+acceptance and merge/publish authorization remain unchanged.
+
 ## Routing and budgets
 Risk LOW/ELEVATED is potential harm; complexity SIMPLE/COMPLEX is reasoning effort.
 Auth, permissions, migrations, data destruction, privacy, credential handling or
