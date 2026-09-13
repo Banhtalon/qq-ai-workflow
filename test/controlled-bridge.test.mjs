@@ -20,6 +20,7 @@ import {
   validateControlledAcceptedPilot,
   controlledQuotaDrill,
   controlledActivate,
+  separateOutput,
   CONTROLLED_TASK_SCHEMA,
   CONTROLLED_CONFIG_SCHEMA,
   CONTROLLED_POLICY
@@ -29,6 +30,13 @@ import { runBridge, validateConfig, quotaDrill, activate } from '../scripts/lib/
 import { validateTask, freeze, readiness, readJson, writeJson, cleanHead } from '../scripts/lib/workflow.mjs';
 import { beginInvocation, finishInvocation, verifyReceiptChain } from '../scripts/lib/receipts.mjs';
 import { fixture } from './fixture.mjs';
+
+// Acceptance, quota-drill and activation flows are explicitly bound to a real
+// Windows pilot by production code.  They run in the Windows CI job; Linux keeps
+// the pure validation and platform-rejection coverage below.
+const realWindowsPilotOnly = {
+  skip: process.platform === 'win32' ? false : 'requires a real Windows pilot; covered by the Windows CI job'
+};
 
 async function createControlledFixture(workerMode = 'pass', taskOverrides = {}, configOverrides = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'qq-controlled-test-'));
@@ -3241,7 +3249,7 @@ async function createAcceptedControlledPilot(options = {}) {
   return f;
 }
 
-test('controlled accepted-pilot validator accepts completed real Windows NORMAL pilot with product check and exact candidate', async () => {
+test('controlled accepted-pilot validator accepts completed real Windows NORMAL pilot with product check and exact candidate', realWindowsPilotOnly, async () => {
   const f = await createAcceptedControlledPilot({ userVisible: true });
   try {
     const pilot = await validateControlledAcceptedPilot(f.config, f.packetDir);
@@ -3261,7 +3269,7 @@ test('controlled accepted-pilot validator accepts completed real Windows NORMAL 
   }
 });
 
-test('controlled accepted-pilot validator rejects missing, stale, or tampered receipt', async () => {
+test('controlled accepted-pilot validator rejects missing, stale, or tampered receipt', realWindowsPilotOnly, async () => {
   const f = await createAcceptedControlledPilot({ userVisible: true });
   try {
     const receiptPath = path.join(f.packetDir, 'receipt.json');
@@ -3323,7 +3331,7 @@ test('controlled accepted-pilot validator rejects missing, stale, or tampered re
   }
 });
 
-test('controlled accepted-pilot validator rejects missing, stale, or tampered gate evidence', async () => {
+test('controlled accepted-pilot validator rejects missing, stale, or tampered gate evidence', realWindowsPilotOnly, async () => {
   const f = await createAcceptedControlledPilot({ userVisible: true });
   try {
     const evidencePath = path.join(f.packetDir, 'evidence.json');
@@ -3369,7 +3377,7 @@ test('controlled accepted-pilot validator rejects missing, stale, or tampered ga
   }
 });
 
-test('controlled accepted-pilot validator rejects missing, stale, or tampered review and review-source', async () => {
+test('controlled accepted-pilot validator rejects missing, stale, or tampered review and review-source', realWindowsPilotOnly, async () => {
   const f = await createAcceptedControlledPilot({ userVisible: true });
   try {
     const reviewPath = path.join(f.packetDir, 'review.json');
@@ -3445,7 +3453,7 @@ test('controlled accepted-pilot validator rejects missing, stale, or tampered re
   }
 });
 
-test('controlled accepted-pilot validator rejects missing, stale, or tampered Product Check for user_visible tasks', async () => {
+test('controlled accepted-pilot validator rejects missing, stale, or tampered Product Check for user_visible tasks', realWindowsPilotOnly, async () => {
   const f = await createAcceptedControlledPilot({ userVisible: true });
   try {
     const pcPath = path.join(f.packetDir, 'product_check.json');
@@ -3491,7 +3499,7 @@ test('controlled accepted-pilot validator rejects missing, stale, or tampered Pr
   }
 });
 
-test('controlled accepted-pilot validator rejects changed config, bridge source, head, or contract', async () => {
+test('controlled accepted-pilot validator rejects changed config, bridge source, head, or contract', realWindowsPilotOnly, async () => {
   const f = await createAcceptedControlledPilot({ userVisible: true });
   try {
     const statePath = path.join(f.packetDir, 'state.json');
@@ -3532,34 +3540,39 @@ test('controlled accepted-pilot validator rejects changed config, bridge source,
   }
 });
 
-test('controlled accepted-pilot validator rejects wrong platform or non-pilot state', async () => {
+test('controlled accepted-pilot validator rejects wrong platform on every CI platform and non-pilot state on Windows', async () => {
   const f = await createAcceptedControlledPilot({ userVisible: true });
   try {
     const statePath = path.join(f.packetDir, 'state.json');
     const origState = await readJson(statePath);
 
-    // 1. Wrong platform in state
-    await writeJson(statePath, { ...origState, platform: 'darwin' });
+    // On Linux, the process platform itself must fail closed. On Windows, mutate
+    // only the persisted pilot platform; neither path fakes process.platform.
+    if (process.platform === 'win32') {
+      await writeJson(statePath, { ...origState, platform: 'darwin' });
+    }
     await assert.rejects(
       validateControlledAcceptedPilot(f.config, f.packetDir),
       /real Windows pilot required/
     );
+    if (process.platform !== 'win32') return;
+    await writeJson(statePath, origState);
 
-    // 2. Non-pilot state (pilot !== true)
+    // 1. Non-pilot state (pilot !== true)
     await writeJson(statePath, { ...origState, pilot: false });
     await assert.rejects(
       validateControlledAcceptedPilot(f.config, f.packetDir),
       /pilot=true/
     );
 
-    // 3. State not in TERMINAL phase
+    // 2. State not in TERMINAL phase
     await writeJson(statePath, { ...origState, phase: 'REPAIR' });
     await assert.rejects(
       validateControlledAcceptedPilot(f.config, f.packetDir),
       /TERMINAL/
     );
 
-    // 4. State in_flight: true
+    // 3. State in_flight: true
     await writeJson(statePath, { ...origState, in_flight: true });
     await assert.rejects(
       validateControlledAcceptedPilot(f.config, f.packetDir),
@@ -3571,26 +3584,26 @@ test('controlled accepted-pilot validator rejects wrong platform or non-pilot st
 });
 
 test('controlled quota drill rejects output directory equal to or inside accepted pilot directory', async () => {
-  const f = await createAcceptedControlledPilot({ userVisible: true });
-  try {
-    // 1. Output directory equal to pilot directory
-    await assert.rejects(
-      controlledQuotaDrill(f.config, f.packetDir, f.packetDir),
-      /quota drill and activation packets must be separate from accepted pilot packets/
-    );
+  const pilotDir = path.join(os.tmpdir(), 'qq-accepted-pilot');
 
-    // 2. Output directory inside pilot directory
-    const insideDir = path.join(f.packetDir, 'sub-dir');
-    await assert.rejects(
-      controlledQuotaDrill(f.config, f.packetDir, insideDir),
-      /quota drill and activation packets must be separate from accepted pilot packets/
-    );
-  } finally {
-    await f.cleanup();
-  }
+  // separateOutput is the pure validation performed by controlledQuotaDrill and
+  // controlledActivate after real-Windows pilot validation. Keep it exercised on
+  // Ubuntu instead of obscuring it behind the production platform guard.
+  assert.throws(
+    () => separateOutput(pilotDir, pilotDir),
+    /quota drill and activation packets must be separate from accepted pilot packets/
+  );
+  assert.throws(
+    () => separateOutput(pilotDir, path.join(pilotDir, 'sub-dir')),
+    /quota drill and activation packets must be separate from accepted pilot packets/
+  );
+  assert.equal(
+    separateOutput(pilotDir, path.join(os.tmpdir(), 'qq-activation-output')),
+    path.resolve(os.tmpdir(), 'qq-activation-output')
+  );
 });
 
-test('controlled quota drill is deterministic, calls no provider, and proves WAITING_QUOTA pause and safe resume', async () => {
+test('controlled quota drill is deterministic, calls no provider, and proves WAITING_QUOTA pause and safe resume', realWindowsPilotOnly, async () => {
   const f = await createAcceptedControlledPilot({ userVisible: true });
   try {
     const activationDir = path.join(f.dir, 'activation');
@@ -3653,7 +3666,7 @@ test('controlled quota drill is deterministic, calls no provider, and proves WAI
   }
 });
 
-test('controlled activation validates quota drill, writes activation receipt, and fails closed on stale/tampered/copied records', async () => {
+test('controlled activation validates quota drill, writes activation receipt, and fails closed on stale/tampered/copied records', realWindowsPilotOnly, async () => {
   const f = await createAcceptedControlledPilot({ userVisible: true });
   try {
     const activationDir = path.join(f.dir, 'activation');
@@ -3711,7 +3724,7 @@ test('controlled activation validates quota drill, writes activation receipt, an
   }
 });
 
-test('non-pilot controlled execution requires config mode LOCAL_AUTO and valid activation receipt; mere toggle fails', async () => {
+test('non-pilot controlled execution requires config mode LOCAL_AUTO and valid activation receipt; mere toggle fails', realWindowsPilotOnly, async () => {
   const f = await createAcceptedControlledPilot({ userVisible: true });
   try {
     const activationDir = path.join(f.dir, 'activation');
@@ -3859,7 +3872,7 @@ test('non-pilot controlled execution requires config mode LOCAL_AUTO and valid a
   }
 });
 
-test('public quotaDrill and activate route controlled pilot packets to controlled validator and preserve legacy behavior', async () => {
+test('public quotaDrill and activate route controlled pilot packets to controlled validator and preserve legacy behavior', realWindowsPilotOnly, async () => {
   const f = await createAcceptedControlledPilot({ userVisible: true });
   try {
     const activationDir = path.join(f.dir, 'activation');
