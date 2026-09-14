@@ -120,6 +120,9 @@ uses a designated Gemini 3.8 Flash High worker, an independent Terra Xhigh ordin
 reviewer, and exactly `gpt-6-astra` at low effort for senior escalation or elevated
 review. Astra never escalates to Astra; an unavailable elevated reviewer returns
 WAIT/STOP and never falls back to Terra.
+The shipped new-task template and `workflow.mjs init` use `CONTROLLED_DELEGATION_V1`.
+`GEMINI_FIRST_V1` remains supported for legacy task compatibility rather than as the
+default for newly initialized tasks.
 The controlled lanes are FAST, NORMAL and ELEVATED_PROCESS; risk remains LOW or
 ELEVATED. FAST is documentation-only with a frozen allowlist and a bound waiver;
 out-of-scope or behavioral content stops with SCOPE_VIOLATION. User-visible tasks

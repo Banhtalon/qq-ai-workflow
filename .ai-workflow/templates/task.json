@@ -1,5 +1,5 @@
 {
-  "schema_version": "qq.workflow.task.v10",
+  "schema_version": "qq.workflow.task.v10.1",
   "task_id": "TASK-EXAMPLE",
   "revision": 1,
   "base_sha": "REPLACE_WITH_FULL_BASE_SHA",
@@ -22,17 +22,26 @@
   "risk": "LOW",
   "complexity": "SIMPLE",
   "execution": {
-    "policy": "GEMINI_FIRST_V1",
-    "prepared": false,
-    "local_synthetic": false,
-    "rationale": "Lead records the inspected scope, approach and risk checks before freezing",
-    "design_sessions": [],
-    "browser_required": true
+    "policy": "CONTROLLED_DELEGATION_V1"
+  },
+  "write_paths": [
+    "src/example.mjs"
+  ],
+  "allowed_paths": [
+    "src/example.mjs"
+  ],
+  "lane": "NORMAL",
+  "initial_lane": "NORMAL",
+  "initial_risk": "LOW",
+  "product_check": {
+    "target_url": "http://localhost:3000",
+    "criteria": [
+      "Replace with an observable product criterion"
+    ],
+    "actions": [
+      "Replace with an ordinary user action"
+    ]
   },
   "candidate_head": null,
-  "contract_sha256": null,
-  "implementer_sessions": [],
-  "repair_rounds": 0,
-  "senior_passes": 0,
-  "owner_acceptance": null
+  "contract_sha256": null
 }

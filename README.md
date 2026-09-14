@@ -13,6 +13,10 @@ dự án nhỏ trên Windows. ChatGPT web là nơi bàn ý tưởng tùy chọn.
 [Migration](.ai-workflow/MIGRATION.md) hướng dẫn chuyển dự án cũ; không tự chuyển
 TASK-11 của mindx-review-bot.
 
+**Dự án mới → Controlled Delegation. `GEMINI_FIRST_V1` chỉ dùng cho task legacy.**
+Task mới dùng `.ai-workflow/templates/task.json` hoặc lệnh `workflow.mjs init`; cấu hình
+bridge mẫu tương ứng là [.ai-workflow/BRIDGE_CONFIG.controlled.example.json](.ai-workflow/BRIDGE_CONFIG.controlled.example.json).
+
 ## Có gì ở bản này
 - Lead gộp điều phối, thao tác kỹ thuật và có thể implement.
 - Quy tắc chọn model theo độ khó và rủi ro; review theo tính năng.
@@ -42,13 +46,23 @@ Pilot dùng Git repo tạm và chương trình test giả lập; không gọi mo
 
 Công cụ cho Lead (Owner không cần chạy):
 ```text
+node scripts/workflow.mjs init TASK-123
 node scripts/workflow.mjs freeze <task.json>
-node scripts/workflow.mjs route <task.json> <profile.json>
-node scripts/workflow.mjs verify <task.json> <repo-directory> <evidence.json>
-node scripts/workflow.mjs status <task.json> <evidence.json> <review.json> <repo-directory>
+node scripts/bridge.mjs pilot <controlled-config.json> <frozen-task.json> <repo> <run-packets>
+node scripts/bridge.mjs status <run-packets>
+node scripts/bridge.mjs report <run-packets>
 ```
-Các file task/evidence đặt trong .workflow-local/ đã gitignore; profile example là
-mẫu, không chứng minh tài khoản đã sẵn sàng.
+`init` tạo `.workflow-local/TASK-123.json` từ HEAD hiện tại và không freeze hay ghi đè
+task đã có. Lead chỉnh goal, scope, gates và Product Check trước khi freeze. Các file
+task/evidence trong `.workflow-local/` đã gitignore; profile example là mẫu, không
+chứng minh tài khoản đã sẵn sàng.
+
+Với task có giao diện, `product_check.command` là phần cấu hình theo từng dự án trước
+khi chạy. File config mẫu không bịa runner dùng chung; nếu thiếu runner, Controlled
+Delegation dừng ở bước chờ Product Check thay vì tự ghi PASS.
+
+Các lệnh `workflow.mjs route`, `verify` và `status` được giữ cho task v10/GEMINI_FIRST
+legacy; flow Controlled mới thực thi và resume qua `bridge.mjs`.
 
 ## Khôi phục v9
 
@@ -64,6 +78,6 @@ Xem [hướng dẫn khôi phục](.ai-workflow/MIGRATION.md#khôi-phục-v9). B�
 cung cấp mức cách ly quyền Controller/Implementer hoặc kiểm chứng chống sửa giả
 của v9. Xem [giới hạn](.ai-workflow/V10_CANONICAL_SPEC.md).
 
-Route chấp nhận --needs-repair khi xử lý lỗi và --quota-exhausted khi hết hạn mức.
-CLI `workflow.mjs` đề xuất quyết định. `bridge.mjs` thực thi vòng tuần tự riêng,
-lưu counter thực tế và dừng khi kết quả thao tác chưa rõ.
+Route legacy chấp nhận --needs-repair khi xử lý lỗi và --quota-exhausted khi hết hạn mức.
+`bridge.mjs` thực thi flow Controlled tuần tự, lưu counter thực tế và dừng khi kết quả
+thao tác chưa rõ.

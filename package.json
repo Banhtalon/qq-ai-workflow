@@ -9,6 +9,7 @@
     "fast-lane": "node scripts/fast-lane.mjs",
     "workflow:check": "node scripts/check-kit.mjs",
     "pilot": "node --test test/pilots.test.mjs",
+    "workflow:init": "node scripts/workflow.mjs init",
     "workflow:freeze": "node scripts/workflow.mjs freeze",
     "workflow:route": "node scripts/workflow.mjs route",
     "workflow:verify": "node scripts/workflow.mjs verify",
