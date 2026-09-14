@@ -18,6 +18,11 @@ test("init creates a Controlled Delegation draft from current HEAD and never ove
   await writeFile(path.join(repo,".gitignore"),".workflow-local/\n");
   git(repo,"add",".");git(repo,"commit","-m","base");
   const head=git(repo,"rev-parse","HEAD").trim();
+  await writeFile(path.join(repo,"README.md"),"dirty\n");
+  const dirty=spawnSync(process.execPath,[cli,"init","TASK-DIRTY"],{cwd:repo,encoding:"utf8"});
+  assert.notEqual(dirty.status,0);
+  await assert.rejects(readFile(path.join(repo,".workflow-local","TASK-DIRTY.json"),"utf8"),error=>error.code==="ENOENT");
+  await writeFile(path.join(repo,"README.md"),"fixture\n");
   const first=spawnSync(process.execPath,[cli,"init","TASK-123"],{cwd:repo,encoding:"utf8"});
   assert.equal(first.status,0,first.stderr);
   const result=JSON.parse(first.stdout),taskPath=path.join(repo,".workflow-local","TASK-123.json");

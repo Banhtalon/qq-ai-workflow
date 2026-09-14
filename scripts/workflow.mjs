@@ -9,7 +9,7 @@ const toolkitRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),".."
 async function initControlledTask(taskId){
   if(!/^TASK-[A-Z0-9_-]+$/i.test(taskId??""))throw new Error("init requires task id like TASK-123");
   const root=git(process.cwd(),"rev-parse","--show-toplevel").trim();
-  const baseSha=git(root,"rev-parse","HEAD").trim();
+  const baseSha=cleanHead(root);
   const template=JSON.parse(await readFile(path.join(toolkitRoot,".ai-workflow","templates","task.json"),"utf8"));
   const task={...template,task_id:taskId,base_sha:baseSha,candidate_head:null,contract_sha256:null};
   const dir=path.join(root,".workflow-local"),target=path.join(dir,taskId+".json");
