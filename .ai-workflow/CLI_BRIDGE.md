@@ -6,6 +6,10 @@
 
 Cầu nối dùng Node 20+, Git, Codex CLI và Antigravity CLI đã có trên máy Windows. Cấu hình chạy nằm trong `.workflow-local/`; tài khoản tiếp tục do CLI chính thức quản lý. `doctor --probe` tạo capability packet có kết quả dạng cấu trúc.
 
+Task mới dùng Controlled Delegation và có cấu hình mẫu tại
+`BRIDGE_CONFIG.controlled.example.json`. `BRIDGE_CONFIG.example.json` được giữ để
+tương thích các task v10/GEMINI_FIRST cũ.
+
 ## Lệnh
 
 ```text
@@ -67,4 +71,4 @@ lệch token thực tế cần một pilot riêng dùng tài khoản thật.
 
 Lệnh trạng thái cho packet Google-worker-first: `node scripts/workflow.mjs status <task> <evidence> <review> <repo> <bridge-config>`. Tham số cuối cung cấp cấu hình reviewer kỳ vọng cho cùng phép kiểm tra readiness được bridge sử dụng.
 
-Khi tiến trình kết thúc bất thường, run packet giữ in-flight marker, session và diff để Lead đối chiếu trước lần thao tác tiếp theo. `status` đọc checkpoint hiện có. Danh sách tham số và cấu hình mẫu ở [BRIDGE_CONFIG.example.json](BRIDGE_CONFIG.example.json).
+Khi tiến trình kết thúc bất thường, run packet giữ in-flight marker, session và diff để Lead đối chiếu trước lần thao tác tiếp theo. `status` đọc checkpoint hiện có. Task mới dùng cấu hình mẫu [BRIDGE_CONFIG.controlled.example.json](BRIDGE_CONFIG.controlled.example.json); `BRIDGE_CONFIG.example.json` chỉ còn phục vụ compatibility với task legacy.

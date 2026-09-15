@@ -139,6 +139,9 @@ back to senior or paid APIs. Luna capabilities are probed only when fallback is 
 persists after four repair rounds, Sol senior has at most two passes (one initial pass and one follow-up
 repair pass); tasks starting at senior also have at most two senior passes without worker budget. Budget
 exhaustion with unresolved issues stops with BLOCKED_TECHNICAL.
+The shipped new-task template and `workflow.mjs init` use `CONTROLLED_DELEGATION_V1`.
+`GEMINI_FIRST_V1` remains supported for legacy task compatibility rather than as the
+default for newly initialized tasks.
 The controlled lanes are FAST, NORMAL and ELEVATED_PROCESS; risk remains LOW or
 ELEVATED. FAST is documentation-only with a frozen allowlist and a bound waiver;
 out-of-scope or behavioral content stops with SCOPE_VIOLATION. User-visible tasks

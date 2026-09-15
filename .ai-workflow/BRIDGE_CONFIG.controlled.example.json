@@ -1,0 +1,35 @@
+{
+  "schema_version": "qq.bridge.v2",
+  "billing": "SUBSCRIPTION_ONLY",
+  "mode": "ASSISTED",
+  "timeout_seconds": 300,
+  "write_paths": ["src/example.mjs"],
+  "gate_paths": ["test", "scripts/check-kit.mjs"],
+  "worker": {
+    "provider": "google",
+    "cli": "antigravity",
+    "command": ["agy"],
+    "model": "gemini-3.8-flash-high"
+  },
+  "reviewer": {
+    "provider": "openai",
+    "cli": "codex",
+    "command": ["codex"],
+    "model": "terra",
+    "effort": "xhigh"
+  },
+  "senior": {
+    "provider": "openai",
+    "cli": "codex",
+    "command": ["codex"],
+    "model": "gpt-6-astra",
+    "effort": "low"
+  },
+  "elevated_reviewer": {
+    "provider": "openai",
+    "cli": "codex",
+    "command": ["codex"],
+    "model": "gpt-6-astra",
+    "effort": "low"
+  }
+}

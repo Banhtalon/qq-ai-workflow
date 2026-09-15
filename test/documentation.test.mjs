@@ -5,6 +5,7 @@ import test from "node:test";
 import {fileURLToPath} from "node:url";
 import {ENTRY_POINT_FILES,REFERENCE_GUIDANCE_FILES,guidanceRuleDriftTerms} from "../scripts/lib/documentation.mjs";
 import {assertCurrentVersionFiles} from "../scripts/lib/version-consistency.mjs";
+import {validateControlledConfig,validateControlledTask} from "../scripts/lib/controlled-bridge.mjs";
 import {mkdir,mkdtemp,rm,writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 
@@ -61,4 +62,20 @@ test("current version check rejects a mismatched temporary fixture",async()=>{
   await writeFile(join(fixture,".ai-workflow","V10_CANONICAL_SPEC.md"),"Version 10.1.0-rc.1 (supporting v10 tasks).\n");
   await assert.rejects(()=>assertCurrentVersionFiles(fixture),/current version consistency check failed.*package\.json=10\.0\.0-rc\.2/u);
  } finally {await rm(fixture,{recursive:true,force:true});}
+});
+
+test("new-project defaults advertise and validate Controlled Delegation",()=>{
+ const task=JSON.parse(readFileSync(join(workspace,".ai-workflow/templates/task.json"),"utf8"));
+ const config=JSON.parse(readFileSync(join(workspace,".ai-workflow/BRIDGE_CONFIG.controlled.example.json"),"utf8"));
+ const readme=readFileSync(join(workspace,"README.md"),"utf8");
+ assert.equal(task.schema_version,"qq.workflow.task.v10.1");
+ assert.equal(task.execution?.policy,"CONTROLLED_DELEGATION_V1");
+ validateControlledTask({...task,base_sha:"0".repeat(40)});
+ validateControlledConfig(config);
+ assert.equal(config.worker.model,"gemini-3.8-flash-high");
+ assert.match(config.reviewer.model,/terra/i);
+ assert.equal(config.reviewer.effort,"xhigh");
+ assert.deepEqual([config.senior.model,config.senior.effort],["gpt-6-astra","low"]);
+ assert.deepEqual([config.elevated_reviewer.model,config.elevated_reviewer.effort],["gpt-6-astra","low"]);
+ assert.match(readme,/Dự án mới → Controlled Delegation\. `GEMINI_FIRST_V1` chỉ dùng cho task legacy\./u);
 });
