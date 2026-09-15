@@ -12,8 +12,11 @@ dự án nhỏ trên Windows. ChatGPT web là nơi bàn ý tưởng tùy chọn.
 [Spec](.ai-workflow/V10_CANONICAL_SPEC.md) là luật duy nhất cho task đã chuyển sang v10.
 [Migration](.ai-workflow/MIGRATION.md) hướng dẫn chuyển dự án cũ; không tự chuyển
 TASK-11 của mindx-review-bot.
+Xem [CHANGELOG](CHANGELOG.md) để theo dõi các mốc release.
 
 **Dự án mới → Controlled Delegation. `GEMINI_FIRST_V1` chỉ dùng cho task legacy.**
+Task mới được khởi tạo với `CONTROLLED_DELEGATION_V1`; `CONTROLLED_DELEGATION_V2`
+là lựa chọn tiết kiệm lượt Codex với tuyến Gemini → Luna khi task contract chọn rõ.
 Task mới dùng `.ai-workflow/templates/task.json` hoặc lệnh `workflow.mjs init`; cấu hình
 bridge mẫu tương ứng là [.ai-workflow/BRIDGE_CONFIG.controlled.example.json](.ai-workflow/BRIDGE_CONFIG.controlled.example.json).
 
@@ -32,6 +35,19 @@ bridge mẫu tương ứng là [.ai-workflow/BRIDGE_CONFIG.controlled.example.js
 - [Luồng Nhanh bằng máy](.ai-workflow/FAST_LANE.md): chỉ định tuyến thay đổi tài liệu
   thuộc allowlist cố định; mọi trường hợp không chứng minh được đều quay về Luồng Tính năng.
 
+### Binding `CONTROLLED_DELEGATION_V2`
+
+| Vai trò | Model và effort |
+| --- | --- |
+| LEAD | `gpt-5.6-sol` · `medium` |
+| Khảo sát, triển khai, test, sửa | `gemini-3.8-flash-high` qua Antigravity CLI (`agy`) |
+| Worker dự phòng | `gpt-5.6-luna` · `max` |
+| Reviewer thông thường | `gpt-5.6-terra` · `xhigh` |
+| Senior và reviewer rủi ro cao | `gpt-5.6-sol` · `medium`, phiên độc lập |
+
+Model yêu cầu và model provider báo cáo được ghi riêng trong receipt. `gpt-6-terra`
+không thuộc binding của bản này; `gpt-5.6-terra` là binding reviewer của V2.
+
 Không có reviewer hoặc kết nối thì Lead lưu việc đang chờ; không giả lập review
 thành công và không yêu cầu Owner chuyển từng gói kỹ thuật.
 
@@ -39,6 +55,7 @@ thành công và không yêu cầu Owner chuyển từng gói kỹ thuật.
 Node.js 20+; không có npm dependency.
 ```text
 npm test
+npm run test:v2
 npm run workflow:check
 npm run pilot
 ```
@@ -48,14 +65,29 @@ Công cụ cho Lead (Owner không cần chạy):
 ```text
 node scripts/workflow.mjs init TASK-123
 node scripts/workflow.mjs freeze <task.json>
+node scripts/bridge.mjs doctor <controlled-config.json> <repo> <doctor-packets> --probe
 node scripts/bridge.mjs pilot <controlled-config.json> <frozen-task.json> <repo> <run-packets>
+node scripts/bridge.mjs resume <controlled-config.json> <frozen-task.json> <repo> <run-packets> --pilot
 node scripts/bridge.mjs status <run-packets>
-node scripts/bridge.mjs report <run-packets>
+node scripts/bridge.mjs report <run-packets> --audience owner --format md
+node scripts/bridge.mjs quota-drill <controlled-config.json> <accepted-pilot-packets> <activation-packets>
+node scripts/bridge.mjs activate <controlled-config.json> <accepted-pilot-packets> <activation-packets>
 ```
 `init` tạo `.workflow-local/TASK-123.json` từ HEAD hiện tại và không freeze hay ghi đè
 task đã có. Lead chỉnh goal, scope, gates và Product Check trước khi freeze. Các file
 task/evidence trong `.workflow-local/` đã gitignore; profile example là mẫu, không
 chứng minh tài khoản đã sẵn sàng.
+
+Kiểm tra nhanh CLI trên Windows:
+
+```text
+agy --version
+agy models
+codex --version
+codex login status
+```
+
+Tài khoản tiếp tục do CLI chính thức quản lý; thông tin đăng nhập không nằm trong packet.
 
 Với task có giao diện, `product_check.command` là phần cấu hình theo từng dự án trước
 khi chạy. File config mẫu không bịa runner dùng chung; nếu thiếu runner, Controlled

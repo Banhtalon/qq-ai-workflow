@@ -10,6 +10,19 @@ Task mới dùng Controlled Delegation và có cấu hình mẫu tại
 `BRIDGE_CONFIG.controlled.example.json`. `BRIDGE_CONFIG.example.json` được giữ để
 tương thích các task v10/GEMINI_FIRST cũ.
 
+Kiểm tra nhanh khả năng CLI trong PowerShell:
+
+```text
+agy --version
+agy models
+codex --version
+codex login status
+```
+
+`agy models` cho danh sách model Antigravity nhìn thấy; `codex login status` cho trạng
+thái đăng nhập ChatGPT CLI. `doctor --probe` là phép kiểm tra được lưu vào capability
+packet để dùng trong checkpoint.
+
 ## Lệnh
 
 ```text
@@ -20,12 +33,24 @@ node scripts/bridge.mjs report <run-packets>
 node scripts/bridge.mjs report <run-packets> --audience lead --format json
 node scripts/bridge.mjs resume <bridge-config.json> <frozen-task.json> <repo> <run-packets> --pilot
 node scripts/bridge.mjs quota-drill <bridge-config.json> <accepted-pilot-packets> <activation-packets>
-node scripts/bridge.mjs activate <bridge-config.json> <accepted-pilot-packets> <target-run-packets>
+node scripts/bridge.mjs activate <bridge-config.json> <accepted-pilot-packets> <activation-packets>
 ```
 
 `workflow.mjs route` trả đề xuất trong chế độ ASSISTED. Bridge ghi argv, thời gian, session, model báo cáo, head, kết quả đã redaction và checkpoint vào run packets. `quota-drill` không gọi AI: nó kiểm tra cầu nối xử lý `WAITING_QUOTA` (hết hạn mức) và resume (tiếp tục) an toàn trên bản sao trạng thái. Dùng thư mục activation tách khỏi packet pilot đã chấp nhận. `activate` chỉ nhận pilot và biên nhận quota drill cùng khớp với canonical spec.
 
 Mỗi lượt thực thi phân biệt `role`, `provider`, `cli`, `requested_model`, `observed_models` và `session_id`. Antigravity là CLI worker hiện tại cho provider Google; Codex là CLI hiện tại cho các vai trò review/senior. Model thực tế lấy từ probe hoặc metadata do CLI/provider báo cáo, không suy đoán từ tên CLI. Bridge nhận các policy `CONTROLLED_DELEGATION_V1` và `CONTROLLED_DELEGATION_V2`; quy tắc định tuyến của chúng chỉ nằm trong canonical spec.
+
+## Controlled Delegation V2
+
+V2 dùng Sol Medium làm Lead, Gemini 3.8 Flash High làm worker chính, Luna Max làm
+worker dự phòng, Terra Xhigh làm reviewer thông thường và Sol Medium cho senior cùng
+reviewer rủi ro cao. V2 giữ một writer tuần tự, lưu nguyên nhân handoff Gemini → Luna,
+bộ đếm sửa và lịch sử invocation lỗi trong packet. Chi tiết binding, ngân sách và điều
+kiện chuyển tuyến nằm tại [canonical spec](V10_CANONICAL_SPEC.md#routing-and-budgets).
+
+Report V2 hiển thị worker đang hoạt động, trạng thái fallback, số vòng sửa đã dùng/còn
+lại, lượt senior, model được yêu cầu và model provider báo cáo. `gpt-6-terra` không thuộc
+model V2; reviewer V2 dùng `gpt-5.6-terra`.
 
 ## Ngữ cảnh review và dữ liệu test
 
@@ -57,9 +82,9 @@ Sol/Lead chạy lệnh và gửi bản Markdown mặc định cho Owner tại m�
 báo cáo từ hồ sơ đã lưu, không gọi Gemini/Codex; báo cáo ghi rõ ai thực hiện
 bước tiếp theo. Bản Lead/JSON dành cho Sol hoặc tác nhân điều phối kỹ thuật.
 
-Theo [spec](V10_CANONICAL_SPEC.md#small-project-execution-and-reporting), Gemini
-thực hiện vòng code–test–sửa khi routing hiện hành cho phép. Lead đọc bản báo
-cáo tại mốc hoàn thành hoặc khi có blocker; reviewer tiếp tục nhận source và
+Theo [spec](V10_CANONICAL_SPEC.md#small-project-execution-and-reporting), worker hiện
+hành thực hiện vòng code–test–sửa khi routing cho phép; trong V2 Luna tiếp tục vai trò
+worker sau handoff. Lead đọc bản báo cáo tại mốc hoàn thành hoặc khi có blocker; reviewer tiếp tục nhận source và
 bằng chứng đầy đủ. Test tập trung dùng trong lúc sửa, bộ gate đã chốt dùng
 ở cuối tính năng. Bộ test nội bộ V10 dành cho việc kiểm tra bộ công cụ này.
 
