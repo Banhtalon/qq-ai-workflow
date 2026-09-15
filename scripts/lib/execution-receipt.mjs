@@ -8,11 +8,21 @@ export const RECEIPT_SCHEMA = 'qq.workflow.execution-receipt.v1';
 export const MANIFEST_SCHEMA = 'qq.workflow.manifest.v1';
 export const FROZEN_RECORD_SCHEMA = 'qq.workflow.lock.v10';
 export const INVOCATION_RECORD_SCHEMA = 'qq.workflow.invocation.v1';
-export const POLICY_DISCRIMINATOR = 'CONTROLLED_DELEGATION_V1';
+export const POLICY_V1 = 'CONTROLLED_DELEGATION_V1';
+export const POLICY_V2 = 'CONTROLLED_DELEGATION_V2';
+export const POLICY_DISCRIMINATOR = POLICY_V1;
+export const POLICIES = Object.freeze([POLICY_V1, POLICY_V2]);
 
 export const GEMINI_MODEL = 'gemini-3.8-flash-high';
 export const ASTRA_MODEL = 'gpt-6-astra';
 export const ASTRA_EFFORT = 'low';
+
+export const LUNA_MODEL = 'gpt-5.6-luna';
+export const LUNA_EFFORT = 'max';
+export const SOL_MODEL = 'gpt-5.6-sol';
+export const SOL_EFFORT = 'medium';
+export const TERRA_MODEL = 'gpt-5.6-terra';
+export const TERRA_EFFORT = 'xhigh';
 
 export const FAILURE_CODES = Object.freeze({
   CONTRACT_MISMATCH: 'CONTRACT_MISMATCH',
@@ -554,12 +564,27 @@ export function buildReceipt(observed, reported, bindings, manifest) {
     throw new Error('observed.output_hash must be a 64-char hex string');
   }
 
-  // Astra effort constraint: Astra models must run at effort low
+  // Model effort constraints:
+  // - Astra: effort low
+  // - Luna: effort max
+  // - Sol: effort medium
   const normReqModel = normalizeModelName(observed.requested_model);
   const isAstra = normReqModel === normalizeModelName(ASTRA_MODEL) || normReqModel.includes('astra');
   if (isAstra) {
     if (observed.requested_effort !== ASTRA_EFFORT) {
       throw new Error(`Astra effort must be '${ASTRA_EFFORT}', got: ${observed.requested_effort}`);
+    }
+  }
+  const isLuna = normReqModel === normalizeModelName(LUNA_MODEL) || normReqModel.includes('luna');
+  if (isLuna) {
+    if (observed.requested_effort !== LUNA_EFFORT) {
+      throw new Error(`Luna effort must be '${LUNA_EFFORT}', got: ${observed.requested_effort}`);
+    }
+  }
+  const isSol = normReqModel === normalizeModelName(SOL_MODEL) || normReqModel.includes('sol');
+  if (isSol) {
+    if (observed.requested_effort !== SOL_EFFORT) {
+      throw new Error(`Sol effort must be '${SOL_EFFORT}', got: ${observed.requested_effort}`);
     }
   }
 
@@ -572,14 +597,34 @@ export function buildReceipt(observed, reported, bindings, manifest) {
     }
   }
 
-  // Require actual_model when reported to match designated requested model; never infer null
-  if (reported?.actual_model != null) {
-    if (typeof reported.actual_model !== 'string' || !reported.actual_model.trim()) {
+  let actualModel = reported?.actual_model ?? null;
+  let validObs = [];
+  if (reported?.observed_models != null) {
+    if (!Array.isArray(reported.observed_models)) {
+      throw new Error('reported.observed_models must be an array when provided');
+    }
+    validObs = reported.observed_models.filter(m => typeof m === 'string' && m.trim());
+    const normObs = [...new Set(validObs.map(normalizeModelName).filter(Boolean))];
+    if (normObs.length > 1) {
+      throw new Error(`Multiple conflicting observed_models reported: ${validObs.join(', ')}`);
+    }
+    if (normObs.length === 1) {
+      if (normObs[0] !== normReqModel) {
+        throw new Error(`Reported observed_models (${validObs[0]}) does not match requested_model (${observed.requested_model})`);
+      }
+      if (actualModel == null) {
+        actualModel = validObs[0];
+      }
+    }
+  }
+
+  if (actualModel != null) {
+    if (typeof actualModel !== 'string' || !actualModel.trim()) {
       throw new Error('reported.actual_model must be a non-empty string when provided');
     }
-    const normActual = normalizeModelName(reported.actual_model);
+    const normActual = normalizeModelName(actualModel);
     if (normActual !== normReqModel) {
-      throw new Error(`Reported actual_model (${reported.actual_model}) does not match requested_model (${observed.requested_model})`);
+      throw new Error(`Reported actual_model (${actualModel}) does not match requested_model (${observed.requested_model})`);
     }
   }
 
@@ -597,6 +642,12 @@ export function buildReceipt(observed, reported, bindings, manifest) {
     }
     if (isAstra && normActualEffort !== ASTRA_EFFORT) {
       throw new Error(`Astra actual_effort must be '${ASTRA_EFFORT}', got: ${reported.actual_effort}`);
+    }
+    if (isLuna && normActualEffort !== LUNA_EFFORT) {
+      throw new Error(`Luna actual_effort must be '${LUNA_EFFORT}', got: ${reported.actual_effort}`);
+    }
+    if (isSol && normActualEffort !== SOL_EFFORT) {
+      throw new Error(`Sol actual_effort must be '${SOL_EFFORT}', got: ${reported.actual_effort}`);
     }
   }
 
@@ -643,7 +694,8 @@ export function buildReceipt(observed, reported, bindings, manifest) {
   }
 
   const reportedByProvider = Object.freeze({
-    actual_model: reported?.actual_model ?? null,
+    actual_model: actualModel,
+    ...(validObs.length > 0 ? { observed_models: validObs } : {}),
     actual_effort: reported?.actual_effort ?? null,
     session_id: reported?.session_id ?? null,
     run_id: reported?.run_id ?? null,
@@ -674,9 +726,21 @@ export function buildReceipt(observed, reported, bindings, manifest) {
     throw new Error('missing or invalid invocation receipt reference');
   }
 
+  const receiptPolicy = bindings.policy ?? POLICY_DISCRIMINATOR;
+  if (!POLICIES.includes(receiptPolicy)) {
+    throw new Error(`Unsupported receipt policy: ${receiptPolicy}`);
+  }
+
+  const designatedRole = bindings.role ?? (
+    normalizeModelName(bindings.designated_implementer) === normalizeModelName(SOL_MODEL) ||
+    normalizeModelName(bindings.designated_implementer) === normalizeModelName(ASTRA_MODEL)
+      ? 'senior'
+      : 'worker'
+  );
+
   return Object.freeze({
     schema_version: RECEIPT_SCHEMA,
-    policy: POLICY_DISCRIMINATOR,
+    policy: receiptPolicy,
     bridge_run_id: bindings.bridge_run_id,
     task_id: bindings.task_id,
     revision: bindings.revision,
@@ -684,6 +748,7 @@ export function buildReceipt(observed, reported, bindings, manifest) {
     config_sha256: bindings.config_sha256,
     bridge_source_sha256: bindings.bridge_source_sha256,
     designated_implementer: bindings.designated_implementer,
+    role: designatedRole,
     base_sha: bindings.base_sha,
     head_before: bindings.head_before,
     manifest_sha256: mDigest,
@@ -737,8 +802,8 @@ export function verifyCandidate(cwd, receipt, frozenRecord, invocationRecord) {
   if (receipt.schema_version !== RECEIPT_SCHEMA) {
     return { ok: false, failure_code: FAILURE_CODES.EXECUTION_MISMATCH, reason: `Invalid receipt schema_version: expected ${RECEIPT_SCHEMA}, got ${receipt.schema_version}` };
   }
-  if (receipt.policy !== POLICY_DISCRIMINATOR) {
-    return { ok: false, failure_code: FAILURE_CODES.EXECUTION_MISMATCH, reason: `Invalid receipt policy: expected ${POLICY_DISCRIMINATOR}, got ${receipt.policy}` };
+  if (!POLICIES.includes(receipt.policy)) {
+    return { ok: false, failure_code: FAILURE_CODES.EXECUTION_MISMATCH, reason: `Invalid receipt policy: expected ${POLICIES.join(' or ')}, got ${receipt.policy}` };
   }
   if (!receipt.bridge_run_id || typeof receipt.bridge_run_id !== 'string') {
     return { ok: false, failure_code: FAILURE_CODES.EXECUTION_MISMATCH, reason: 'Missing bridge_run_id in receipt' };
@@ -814,7 +879,29 @@ export function verifyCandidate(cwd, receipt, frozenRecord, invocationRecord) {
     };
   }
 
-  // Astra effort check
+  // Permitted implementers per policy
+  const normDesig = normalizeModelName(receipt.designated_implementer);
+  if (receipt.policy === POLICY_V2) {
+    const validV2 = [normalizeModelName(GEMINI_MODEL), normalizeModelName(LUNA_MODEL), normalizeModelName(SOL_MODEL)];
+    if (!validV2.includes(normDesig)) {
+      return {
+        ok: false,
+        failure_code: FAILURE_CODES.EXECUTION_MISMATCH,
+        reason: `Policy ${POLICY_V2} requires designated_implementer to be ${GEMINI_MODEL}, ${LUNA_MODEL}, or ${SOL_MODEL}; got: ${receipt.designated_implementer}`
+      };
+    }
+  } else {
+    const validV1 = [normalizeModelName(GEMINI_MODEL), normalizeModelName(ASTRA_MODEL)];
+    if (!validV1.includes(normDesig)) {
+      return {
+        ok: false,
+        failure_code: FAILURE_CODES.EXECUTION_MISMATCH,
+        reason: `Policy ${POLICY_V1} requires designated_implementer to be ${GEMINI_MODEL} or ${ASTRA_MODEL}; got: ${receipt.designated_implementer}`
+      };
+    }
+  }
+
+  // Model-specific effort constraints
   const isAstra = normReq === normalizeModelName(ASTRA_MODEL) || normReq.includes('astra');
   if (isAstra) {
     if (ob.requested_effort !== ASTRA_EFFORT) {
@@ -822,6 +909,26 @@ export function verifyCandidate(cwd, receipt, frozenRecord, invocationRecord) {
         ok: false,
         failure_code: FAILURE_CODES.EXECUTION_MISMATCH,
         reason: `Astra effort must be '${ASTRA_EFFORT}', got: ${ob.requested_effort}`
+      };
+    }
+  }
+  const isLuna = normReq === normalizeModelName(LUNA_MODEL) || normReq.includes('luna');
+  if (isLuna) {
+    if (ob.requested_effort !== LUNA_EFFORT) {
+      return {
+        ok: false,
+        failure_code: FAILURE_CODES.EXECUTION_MISMATCH,
+        reason: `Luna effort must be '${LUNA_EFFORT}', got: ${ob.requested_effort}`
+      };
+    }
+  }
+  const isSol = normReq === normalizeModelName(SOL_MODEL) || normReq.includes('sol');
+  if (isSol) {
+    if (ob.requested_effort !== SOL_EFFORT) {
+      return {
+        ok: false,
+        failure_code: FAILURE_CODES.EXECUTION_MISMATCH,
+        reason: `Sol effort must be '${SOL_EFFORT}', got: ${ob.requested_effort}`
       };
     }
   }
@@ -838,6 +945,31 @@ export function verifyCandidate(cwd, receipt, frozenRecord, invocationRecord) {
         ok: false,
         failure_code: FAILURE_CODES.EXECUTION_MISMATCH,
         reason: `Reported actual_model (${rp.actual_model}) does not match requested_model (${ob.requested_model})`
+      };
+    }
+  }
+  if (rp.observed_models != null) {
+    if (!Array.isArray(rp.observed_models)) {
+      return {
+        ok: false,
+        failure_code: FAILURE_CODES.EXECUTION_MISMATCH,
+        reason: 'Reported observed_models must be an array when provided'
+      };
+    }
+    const validObs = rp.observed_models.filter(m => typeof m === 'string' && m.trim());
+    const normObs = [...new Set(validObs.map(normalizeModelName).filter(Boolean))];
+    if (normObs.length > 1) {
+      return {
+        ok: false,
+        failure_code: FAILURE_CODES.EXECUTION_MISMATCH,
+        reason: `Multiple conflicting observed_models reported: ${validObs.join(', ')}`
+      };
+    }
+    if (normObs.length === 1 && normObs[0] !== normReq) {
+      return {
+        ok: false,
+        failure_code: FAILURE_CODES.EXECUTION_MISMATCH,
+        reason: `Reported observed_models (${validObs[0]}) does not match requested_model (${ob.requested_model})`
       };
     }
   }
@@ -865,6 +997,20 @@ export function verifyCandidate(cwd, receipt, frozenRecord, invocationRecord) {
         ok: false,
         failure_code: FAILURE_CODES.EXECUTION_MISMATCH,
         reason: `Astra actual_effort must be '${ASTRA_EFFORT}', got: ${rp.actual_effort}`
+      };
+    }
+    if (isLuna && normActualEffort !== LUNA_EFFORT) {
+      return {
+        ok: false,
+        failure_code: FAILURE_CODES.EXECUTION_MISMATCH,
+        reason: `Luna actual_effort must be '${LUNA_EFFORT}', got: ${rp.actual_effort}`
+      };
+    }
+    if (isSol && normActualEffort !== SOL_EFFORT) {
+      return {
+        ok: false,
+        failure_code: FAILURE_CODES.EXECUTION_MISMATCH,
+        reason: `Sol actual_effort must be '${SOL_EFFORT}', got: ${rp.actual_effort}`
       };
     }
   }
@@ -941,6 +1087,13 @@ export function verifyCandidate(cwd, receipt, frozenRecord, invocationRecord) {
       reason: `Base SHA mismatch: frozenRecord=${frozenRecord.base_sha}, receipt=${receipt.base_sha}`
     };
   }
+  if (frozenRecord.policy && frozenRecord.policy !== receipt.policy) {
+    return {
+      ok: false,
+      failure_code: FAILURE_CODES.CONTRACT_MISMATCH,
+      reason: `Policy mismatch: frozenRecord=${frozenRecord.policy}, receipt=${receipt.policy}`
+    };
+  }
 
   // 3. Strict Invocation Record Validation
   if (!invocationRecord || typeof invocationRecord !== 'object') {
@@ -951,6 +1104,13 @@ export function verifyCandidate(cwd, receipt, frozenRecord, invocationRecord) {
       ok: false,
       failure_code: FAILURE_CODES.EXECUTION_MISMATCH,
       reason: `Invalid invocationRecord schema_version: expected ${INVOCATION_RECORD_SCHEMA}, got ${invocationRecord.schema_version}`
+    };
+  }
+  if (invocationRecord.policy && invocationRecord.policy !== receipt.policy) {
+    return {
+      ok: false,
+      failure_code: FAILURE_CODES.EXECUTION_MISMATCH,
+      reason: `Policy mismatch: invocation=${invocationRecord.policy}, receipt=${receipt.policy}`
     };
   }
   if (!invocationRecord.bridge_run_id || invocationRecord.bridge_run_id !== receipt.bridge_run_id) {

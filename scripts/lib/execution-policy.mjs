@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
 
 /**
- * Policy key for controlled delegation v1.
+ * Policy keys for controlled delegation.
  */
-export const POLICY_DISCRIMINATOR = 'CONTROLLED_DELEGATION_V1';
+export const POLICY_V1 = 'CONTROLLED_DELEGATION_V1';
+export const POLICY_V2 = 'CONTROLLED_DELEGATION_V2';
+export const POLICY_DISCRIMINATOR = POLICY_V1;
+export const POLICIES = Object.freeze([POLICY_V1, POLICY_V2]);
 
 /**
  * Expected schema versions for task and frozen record (lock).
@@ -16,7 +19,8 @@ export const RECORD_SCHEMA = 'qq.workflow.lock.v10';
  */
 export const BUDGET_ORIGINS = Object.freeze({
   GEMINI_INITIAL: 'GEMINI_INITIAL',
-  ASTRA_INITIAL: 'ASTRA_INITIAL'
+  ASTRA_INITIAL: 'ASTRA_INITIAL',
+  SOL_INITIAL: 'SOL_INITIAL'
 });
 
 /**
@@ -26,7 +30,8 @@ export const BUDGET_EVENTS = Object.freeze({
   INITIAL: 'INITIAL',
   REPAIR_REQUESTED: 'REPAIR_REQUESTED',
   INTERRUPTED: 'INTERRUPTED',
-  RESUME_VALIDATED: 'RESUME_VALIDATED'
+  RESUME_VALIDATED: 'RESUME_VALIDATED',
+  FALLBACK_TRIGGERED: 'FALLBACK_TRIGGERED'
 });
 
 /**
@@ -86,11 +91,18 @@ export const FAILURE_CODES = Object.freeze({
 });
 
 /**
- * Bound worker and senior model designations.
+ * Bound worker, fallback worker, reviewer, and senior model designations.
  */
 export const GEMINI_MODEL = 'gemini-3.8-flash-high';
 export const ASTRA_MODEL = 'gpt-6-astra';
 export const ASTRA_EFFORT = 'low';
+
+export const LUNA_MODEL = 'gpt-5.6-luna';
+export const LUNA_EFFORT = 'max';
+export const SOL_MODEL = 'gpt-5.6-sol';
+export const SOL_EFFORT = 'medium';
+export const TERRA_MODEL = 'gpt-5.6-terra';
+export const TERRA_EFFORT = 'xhigh';
 
 /**
  * Canonical contract keys to project from task into frozen payload.
@@ -216,10 +228,11 @@ export function validateFrozenRecord(task, record) {
   }
 
   // 1. Task schema and policy validation
-  if (task.policy !== POLICY_DISCRIMINATOR) {
+  const taskPolicy = task.policy;
+  if (taskPolicy !== POLICY_V1 && taskPolicy !== POLICY_V2) {
     return {
       ok: false,
-      reason: `Unsupported task policy: ${task.policy}; expected ${POLICY_DISCRIMINATOR}`,
+      reason: `Unsupported task policy: ${task.policy}; expected ${POLICIES.join(' or ')}`,
       failure_code: FAILURE_CODES.CONTRACT_MISMATCH
     };
   }
@@ -254,10 +267,10 @@ export function validateFrozenRecord(task, record) {
       failure_code: FAILURE_CODES.CONTRACT_MISMATCH
     };
   }
-  if (record.policy !== undefined && record.policy !== POLICY_DISCRIMINATOR) {
+  if (record.policy !== undefined && record.policy !== taskPolicy) {
     return {
       ok: false,
-      reason: `Record policy mismatch: ${record.policy}; expected ${POLICY_DISCRIMINATOR}`,
+      reason: `Record policy mismatch: ${record.policy}; expected ${taskPolicy}`,
       failure_code: FAILURE_CODES.CONTRACT_MISMATCH
     };
   }
@@ -322,10 +335,10 @@ export function validateFrozenRecord(task, record) {
       };
     }
     // Reject unsupported policy or schema in contract_payload
-    if (record.contract_payload.policy !== undefined && record.contract_payload.policy !== POLICY_DISCRIMINATOR) {
+    if (record.contract_payload.policy !== undefined && record.contract_payload.policy !== taskPolicy) {
       return {
         ok: false,
-        reason: `Frozen record contract_payload policy mismatch: ${record.contract_payload.policy}; expected ${POLICY_DISCRIMINATOR}`,
+        reason: `Frozen record contract_payload policy mismatch: ${record.contract_payload.policy}; expected ${taskPolicy}`,
         failure_code: FAILURE_CODES.CONTRACT_MISMATCH
       };
     }
@@ -392,10 +405,38 @@ export function validateFrozenRecord(task, record) {
 /**
  * Initializes a new immutable budget tracking state object.
  *
- * @param {'GEMINI_INITIAL' | 'ASTRA_INITIAL'} origin
+ * @param {'GEMINI_INITIAL' | 'ASTRA_INITIAL' | 'SOL_INITIAL'} origin
+ * @param {'CONTROLLED_DELEGATION_V1' | 'CONTROLLED_DELEGATION_V2'} [policy='CONTROLLED_DELEGATION_V1']
  * @returns {object} Budget state
  */
-export function createBudget(origin) {
+export function createBudget(origin, policy = POLICY_V1) {
+  if (policy === POLICY_V2) {
+    if (origin !== BUDGET_ORIGINS.GEMINI_INITIAL && origin !== BUDGET_ORIGINS.SOL_INITIAL && origin !== BUDGET_ORIGINS.ASTRA_INITIAL) {
+      throw new Error(`Unsupported budget origin for V2: ${origin}`);
+    }
+    const resolvedOrigin = origin === BUDGET_ORIGINS.ASTRA_INITIAL ? BUDGET_ORIGINS.SOL_INITIAL : origin;
+    return Object.freeze({
+      schema_version: 'qq.workflow.budget.v2',
+      policy: POLICY_V2,
+      origin: resolvedOrigin,
+      active_worker: resolvedOrigin === BUDGET_ORIGINS.SOL_INITIAL ? null : 'gemini',
+      fallback_occurred: false,
+      fallback_reason: null,
+      fallback_handoff: null,
+      initial_count: 0,
+      repair_count: 0,
+      senior_count: 0,
+      senior_used: false,
+      escalation_count: 0,
+      escalation_used: false,
+      active_attempt_id: null,
+      pending_reconcile: false,
+      attempts: Object.freeze([]),
+      failed_invocations: Object.freeze([]),
+      handoff_history: Object.freeze([])
+    });
+  }
+
   if (origin !== BUDGET_ORIGINS.GEMINI_INITIAL && origin !== BUDGET_ORIGINS.ASTRA_INITIAL) {
     throw new Error(`Unsupported budget origin: ${origin}`);
   }
@@ -413,6 +454,465 @@ export function createBudget(origin) {
   });
 }
 
+const ALLOWED_FAILED_INVOCATION_KEYS = Object.freeze([
+  'schema_version', 'policy', 'role', 'bridge_run_id', 'task_id', 'revision',
+  'contract_sha256', 'config_sha256', 'bridge_source_sha256', 'designated_implementer',
+  'provider', 'model', 'requested_model', 'effort', 'requested_effort',
+  'input_packet_hash', 'output_hash', 'started_at', 'finished_at', 'timestamp',
+  'status', 'termination_status', 'reason', 'code', 'argv', 'authorized_ignored', 'id'
+]);
+
+const ALLOWED_HANDOFF_KEYS = Object.freeze([
+  'from_worker', 'to_worker', 'reason', 'timestamp',
+  'attempt_id', 'failed_invocation_id', 'invocation_id', 'bridge_run_id',
+  'digest', 'hash'
+]);
+
+function normalizeModelName(m) {
+  if (typeof m !== 'string') return null;
+  let s = m.trim().toLowerCase();
+  if (s.startsWith('models/')) s = s.slice(7);
+  if (s.endsWith(':latest')) s = s.slice(0, -7);
+  return s;
+}
+
+function isGeminiWorkerName(w) {
+  if (typeof w !== 'string') return false;
+  return w === 'gemini' || normalizeModelName(w) === GEMINI_MODEL;
+}
+
+function isLunaWorkerName(w) {
+  if (typeof w !== 'string') return false;
+  return w === 'luna' || normalizeModelName(w) === LUNA_MODEL;
+}
+
+export function handoffDigest(h) {
+  if (!h || typeof h !== 'object') return null;
+  const payload = {
+    from_worker: h.from_worker ?? null,
+    to_worker: h.to_worker ?? null,
+    reason: h.reason ?? null,
+    timestamp: h.timestamp ?? null,
+    attempt_id: h.attempt_id ?? null,
+    failed_invocation_id: h.failed_invocation_id ?? null
+  };
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+}
+
+function validateHandoffShape(h, prefix = 'handoff') {
+  if (!h || typeof h !== 'object' || Array.isArray(h)) {
+    return { valid: false, ok: false, reason: `${prefix} must be a non-null object` };
+  }
+  for (const k of Object.keys(h)) {
+    if (!ALLOWED_HANDOFF_KEYS.includes(k)) {
+      return { valid: false, ok: false, reason: `${prefix} contains unauthorized field: ${k}` };
+    }
+  }
+  if (!isGeminiWorkerName(h.from_worker)) {
+    return { valid: false, ok: false, reason: `${prefix} from_worker must be Gemini (got ${h.from_worker})` };
+  }
+  if (!isLunaWorkerName(h.to_worker)) {
+    return { valid: false, ok: false, reason: `${prefix} to_worker must be Luna (got ${h.to_worker})` };
+  }
+  if (typeof h.reason !== 'string' || !h.reason.trim()) {
+    return { valid: false, ok: false, reason: `${prefix} reason must be a non-empty string` };
+  }
+  if (typeof h.timestamp !== 'string' || !h.timestamp.trim() || isNaN(Date.parse(h.timestamp))) {
+    return { valid: false, ok: false, reason: `${prefix} timestamp must be a valid ISO date string` };
+  }
+  if (h.attempt_id != null && (typeof h.attempt_id !== 'string' || !/^attempt-\d+$/.test(h.attempt_id))) {
+    return { valid: false, ok: false, reason: `${prefix} attempt_id must be a valid attempt reference` };
+  }
+  if (typeof h.failed_invocation_id !== 'string' || !h.failed_invocation_id.trim()) {
+    return { valid: false, ok: false, reason: `${prefix} failed_invocation_id must be a valid non-empty string` };
+  }
+  if (h.digest != null) {
+    const expectedDigest = handoffDigest(h);
+    if (h.digest !== expectedDigest) {
+      return { valid: false, ok: false, reason: `${prefix} digest mismatch: tamper detected` };
+    }
+  }
+  return { valid: true, ok: true };
+}
+
+function validateFailedInvocationShape(fi, index) {
+  if (!fi || typeof fi !== 'object' || Array.isArray(fi)) {
+    return { valid: false, ok: false, reason: `failed_invocations[${index}] must be a non-null object` };
+  }
+  for (const k of Object.keys(fi)) {
+    if (!ALLOWED_FAILED_INVOCATION_KEYS.includes(k)) {
+      return { valid: false, ok: false, reason: `failed_invocations[${index}] contains unauthorized field: ${k}` };
+    }
+  }
+  const provider = fi.provider;
+  if (typeof provider !== 'string' || !provider.trim()) {
+    return { valid: false, ok: false, reason: `failed_invocations[${index}] provider must be a non-empty string` };
+  }
+  const model = fi.model ?? fi.requested_model ?? fi.designated_implementer;
+  const isGemini = isGeminiWorkerName(model);
+  const isLuna = isLunaWorkerName(model);
+  if (!isGemini && !isLuna) {
+    return { valid: false, ok: false, reason: `failed_invocations[${index}] model must be Gemini or Luna` };
+  }
+  if ((isGemini && provider !== 'google') || (isLuna && provider !== 'openai')) {
+    return { valid: false, ok: false, reason: `failed_invocations[${index}] provider does not match model binding` };
+  }
+  const status = fi.status ?? fi.termination_status;
+  if (typeof status !== 'string' || !status.trim()) {
+    return { valid: false, ok: false, reason: `failed_invocations[${index}] status must be a non-empty string` };
+  }
+  if (typeof fi.bridge_run_id !== 'string' || !fi.bridge_run_id.trim()) {
+    return { valid: false, ok: false, reason: `failed_invocations[${index}] bridge_run_id must be a valid non-empty string` };
+  }
+  return { valid: true, ok: true };
+}
+
+/**
+ * Validates budget state structural integrity and consistency for V2.
+ */
+function validateBudgetStateV2(state) {
+  if (state.policy !== POLICY_V2) {
+    return { valid: false, ok: false, reason: `Invalid or missing budget policy for V2: ${state.policy}` };
+  }
+  if (state.origin !== BUDGET_ORIGINS.GEMINI_INITIAL && state.origin !== BUDGET_ORIGINS.SOL_INITIAL) {
+    return { valid: false, ok: false, reason: `Unsupported V2 budget origin: ${state.origin}` };
+  }
+
+  // Counters: finite nonnegative integers required
+  if (typeof state.initial_count !== 'number' || !Number.isInteger(state.initial_count) || state.initial_count < 0) {
+    return { valid: false, ok: false, reason: `initial_count must be a finite nonnegative integer (got ${state.initial_count})` };
+  }
+  if (typeof state.repair_count !== 'number' || !Number.isInteger(state.repair_count) || state.repair_count < 0) {
+    return { valid: false, ok: false, reason: `repair_count must be a finite nonnegative integer (got ${state.repair_count})` };
+  }
+  const seniorCount = state.senior_count;
+  const escalationCount = state.escalation_count;
+  if (typeof seniorCount !== 'number' || !Number.isInteger(seniorCount) || seniorCount < 0) {
+    return { valid: false, ok: false, reason: `senior_count must be a finite nonnegative integer (got ${seniorCount})` };
+  }
+  if (typeof escalationCount !== 'number' || !Number.isInteger(escalationCount) || escalationCount < 0) {
+    return { valid: false, ok: false, reason: `escalation_count must be a finite nonnegative integer (got ${escalationCount})` };
+  }
+  if (seniorCount !== escalationCount) {
+    return {
+      valid: false,
+      ok: false,
+      reason: `senior_count (${seniorCount}) does not match escalation_count (${escalationCount})`
+    };
+  }
+
+  // Origin-specific counter bounds
+  if (state.origin === BUDGET_ORIGINS.GEMINI_INITIAL) {
+    if (state.initial_count > 1) {
+      return { valid: false, ok: false, reason: `initial_count exceeds maximum of 1 for GEMINI_INITIAL (got ${state.initial_count})` };
+    }
+    // 4 shared worker repairs
+    if (state.repair_count > 4) {
+      return { valid: false, ok: false, reason: `repair_count exceeds maximum of 4 for V2 GEMINI_INITIAL (got ${state.repair_count})` };
+    }
+    // Up to 2 Sol senior passes
+    if (seniorCount > 2) {
+      return { valid: false, ok: false, reason: `senior_count exceeds maximum of 2 for V2 GEMINI_INITIAL (got ${seniorCount})` };
+    }
+  } else if (state.origin === BUDGET_ORIGINS.SOL_INITIAL) {
+    if (state.initial_count > 1) {
+      return { valid: false, ok: false, reason: `initial_count exceeds maximum of 1 for SOL_INITIAL (got ${state.initial_count})` };
+    }
+    if (state.repair_count > 1) {
+      return { valid: false, ok: false, reason: `repair_count exceeds maximum of 1 for SOL_INITIAL (got ${state.repair_count})` };
+    }
+    if (seniorCount !== 0) {
+      return { valid: false, ok: false, reason: `senior_count must be 0 for SOL_INITIAL (got ${seniorCount})` };
+    }
+  }
+
+  // Escalation / senior flag check
+  const seniorUsed = state.senior_used;
+  const escalationUsed = state.escalation_used;
+  if (typeof seniorUsed !== 'boolean' || typeof escalationUsed !== 'boolean') {
+    return { valid: false, ok: false, reason: 'senior_used/escalation_used must be a boolean' };
+  }
+  if (seniorUsed !== escalationUsed) {
+    return {
+      valid: false,
+      ok: false,
+      reason: `senior_used (${seniorUsed}) does not match escalation_used (${escalationUsed})`
+    };
+  }
+  const expectedSeniorUsed = seniorCount > 0;
+  if (seniorUsed !== expectedSeniorUsed) {
+    return {
+      valid: false,
+      ok: false,
+      reason: `senior_used (${seniorUsed}) contradicts senior_count (${seniorCount})`
+    };
+  }
+
+  // Failed invocations array validation
+  if (!Array.isArray(state.failed_invocations)) {
+    return { valid: false, ok: false, reason: 'failed_invocations must be an array' };
+  }
+  for (let i = 0; i < state.failed_invocations.length; i++) {
+    const fiCheck = validateFailedInvocationShape(state.failed_invocations[i], i);
+    if (!fiCheck.ok) return fiCheck;
+  }
+
+  // Fallback and active worker validation
+  if (typeof state.fallback_occurred !== 'boolean') {
+    return { valid: false, ok: false, reason: 'fallback_occurred must be a boolean' };
+  }
+  if (state.origin === BUDGET_ORIGINS.SOL_INITIAL && state.active_worker !== null) {
+    return { valid: false, ok: false, reason: 'active_worker must be null for SOL_INITIAL' };
+  }
+  if (state.origin === BUDGET_ORIGINS.GEMINI_INITIAL && !['gemini', 'luna'].includes(state.active_worker)) {
+    return { valid: false, ok: false, reason: `active_worker must be gemini or luna for GEMINI_INITIAL (got ${state.active_worker})` };
+  }
+
+  if (state.fallback_occurred) {
+    if (state.origin !== BUDGET_ORIGINS.GEMINI_INITIAL) {
+      return { valid: false, ok: false, reason: `fallback_occurred true is only valid for GEMINI_INITIAL (got ${state.origin})` };
+    }
+    if (state.active_worker !== 'luna') {
+      return { valid: false, ok: false, reason: 'active_worker must be luna when fallback_occurred is true' };
+    }
+    if (typeof state.fallback_reason !== 'string' || !state.fallback_reason.trim()) {
+      return { valid: false, ok: false, reason: 'fallback_reason must be a non-empty string when fallback_occurred is true' };
+    }
+    const handoffCheck = validateHandoffShape(state.fallback_handoff, 'fallback_handoff');
+    if (!handoffCheck.ok) return handoffCheck;
+
+    if (!Array.isArray(state.handoff_history) || state.handoff_history.length !== 1) {
+      return {
+        valid: false,
+        ok: false,
+        reason: `handoff_history must contain exactly 1 entry for one-way Gemini-to-Luna fallback (got ${state.handoff_history?.length ?? 'non-array'})`
+      };
+    }
+    const historyCheck = validateHandoffShape(state.handoff_history[0], 'handoff_history[0]');
+    if (!historyCheck.ok) return historyCheck;
+
+    // Strict binding between fallback_handoff and handoff_history[0]
+    const h0 = state.handoff_history[0];
+    const fh = state.fallback_handoff;
+    if (fh.from_worker !== h0.from_worker ||
+        fh.to_worker !== h0.to_worker ||
+        fh.reason !== h0.reason ||
+        fh.timestamp !== h0.timestamp ||
+        (fh.attempt_id ?? null) !== (h0.attempt_id ?? null) ||
+        (fh.failed_invocation_id ?? null) !== (h0.failed_invocation_id ?? null)) {
+      return { valid: false, ok: false, reason: 'fallback_handoff does not match canonical handoff_history entry: tamper detected' };
+    }
+    if (state.fallback_reason !== fh.reason) {
+      return { valid: false, ok: false, reason: `fallback_reason (${state.fallback_reason}) does not match fallback_handoff.reason (${fh.reason})` };
+    }
+    const referencedFailures = state.failed_invocations.filter(fi =>
+      fi.bridge_run_id === fh.failed_invocation_id &&
+      isGeminiWorkerName(fi.model ?? fi.requested_model ?? fi.designated_implementer) &&
+      fi.provider === 'google');
+    if (referencedFailures.length !== 1) {
+      return { valid: false, ok: false, reason: 'fallback_handoff failed_invocation_id must reference exactly one recorded Gemini invocation' };
+    }
+    if (state.handoff_digest != null) {
+      const expD = handoffDigest(fh);
+      if (state.handoff_digest !== expD) {
+        return { valid: false, ok: false, reason: 'state.handoff_digest does not match canonical handoff: tamper detected' };
+      }
+    }
+    if (fh.digest != null) {
+      const expD = handoffDigest(fh);
+      if (fh.digest !== expD) {
+        return { valid: false, ok: false, reason: 'fallback_handoff digest does not match canonical handoff: tamper detected' };
+      }
+    }
+  } else {
+    // fallback_occurred === false
+    if (state.origin === BUDGET_ORIGINS.GEMINI_INITIAL && state.active_worker !== 'gemini') {
+      return { valid: false, ok: false, reason: 'active_worker must be gemini when fallback_occurred is false' };
+    }
+    if (state.fallback_reason !== null) {
+      return { valid: false, ok: false, reason: 'fallback_reason must be null when fallback_occurred is false' };
+    }
+    if (state.fallback_handoff !== null) {
+      return { valid: false, ok: false, reason: 'fallback_handoff must be null when fallback_occurred is false' };
+    }
+    if (state.handoff_history !== undefined && state.handoff_history !== null) {
+      if (!Array.isArray(state.handoff_history) || state.handoff_history.length !== 0) {
+        return { valid: false, ok: false, reason: 'handoff_history must be empty or omitted when fallback_occurred is false' };
+      }
+    }
+  }
+
+  // Attempts array
+  if (!Array.isArray(state.attempts)) {
+    return { valid: false, ok: false, reason: 'attempts must be an array' };
+  }
+
+  // Reconcile counters with attempt history
+  const initialAttempts = state.attempts.filter(a => a && a.phase === 'initial');
+  const repairAttempts = state.attempts.filter(a => a && a.phase === 'repair');
+  const fallbackAttempts = state.attempts.filter(a => a && a.phase === 'fallback_worker');
+  const seniorAttempts = state.attempts.filter(a => a && (a.phase === 'senior' || a.phase === 'escalation'));
+
+  if (state.initial_count !== initialAttempts.length) {
+    return {
+      valid: false,
+      ok: false,
+      reason: `initial_count (${state.initial_count}) does not match initial attempt history (${initialAttempts.length})`
+    };
+  }
+  if (state.repair_count !== repairAttempts.length) {
+    return {
+      valid: false,
+      ok: false,
+      reason: `repair_count (${state.repair_count}) does not match repair attempt history (${repairAttempts.length})`
+    };
+  }
+  if (seniorCount !== seniorAttempts.length) {
+    return {
+      valid: false,
+      ok: false,
+      reason: `senior_count (${seniorCount}) does not match senior attempt history (${seniorAttempts.length})`
+    };
+  }
+  if (state.attempts.length !== (state.initial_count + state.repair_count + seniorCount + fallbackAttempts.length)) {
+    return {
+      valid: false,
+      ok: false,
+      reason: `Total attempts (${state.attempts.length}) contradicts sum of counters (${state.initial_count + state.repair_count + seniorCount + fallbackAttempts.length})`
+    };
+  }
+
+  if (state.fallback_occurred) {
+    if (fallbackAttempts.length !== 1) {
+      return {
+        valid: false,
+        ok: false,
+        reason: `fallback_occurred true requires exactly one fallback_worker attempt (got ${fallbackAttempts.length})`
+      };
+    }
+    if (fallbackAttempts[0].model !== LUNA_MODEL || fallbackAttempts[0].effort !== LUNA_EFFORT) {
+      return {
+        valid: false,
+        ok: false,
+        reason: `Luna fallback attempt must specify model '${LUNA_MODEL}' at effort '${LUNA_EFFORT}'`
+      };
+    }
+    const fh = state.fallback_handoff;
+    if (fh.attempt_id != null && fh.attempt_id !== fallbackAttempts[0].id) {
+      return {
+        valid: false,
+        ok: false,
+        reason: `fallback_handoff attempt_id (${fh.attempt_id}) does not match Luna fallback attempt (${fallbackAttempts[0].id})`
+      };
+    }
+  } else {
+    if (fallbackAttempts.length !== 0) {
+      return {
+        valid: false,
+        ok: false,
+        reason: `fallback_occurred false cannot have fallback_worker attempts (got ${fallbackAttempts.length})`
+      };
+    }
+  }
+
+  // Attempt items sequence, IDs, tiers, models, and statuses
+  const VALID_STATUSES = new Set(['LAUNCHED', 'INTERRUPTED', 'RESUMED']);
+  let fallbackSeen = false;
+  for (let i = 0; i < state.attempts.length; i++) {
+    const att = state.attempts[i];
+    if (!att || typeof att !== 'object') {
+      return { valid: false, ok: false, reason: `Attempt at index ${i} is not a valid object` };
+    }
+    const expectedId = `attempt-${i + 1}`;
+    if (att.id !== expectedId) {
+      return { valid: false, ok: false, reason: `Attempt at index ${i} ID mismatch: expected ${expectedId}, got ${att.id}` };
+    }
+    if (att.origin !== state.origin) {
+      return { valid: false, ok: false, reason: `Attempt ${att.id} origin (${att.origin}) does not match state origin (${state.origin})` };
+    }
+    if (!VALID_STATUSES.has(att.status)) {
+      return { valid: false, ok: false, reason: `Attempt ${att.id} has invalid status: ${att.status}` };
+    }
+
+    if (i === 0) {
+      if (att.phase !== 'initial') {
+        return { valid: false, ok: false, reason: `First attempt ${att.id} must have phase 'initial'` };
+      }
+    } else {
+      if (att.phase === 'initial') {
+        return { valid: false, ok: false, reason: `Subsequent attempt ${att.id} cannot have phase 'initial'` };
+      }
+    }
+
+    if (state.origin === BUDGET_ORIGINS.GEMINI_INITIAL) {
+      if (att.phase === 'initial') {
+        if (i !== 0 || att.tier !== 'worker' || att.model !== GEMINI_MODEL || att.effort !== null) {
+          return { valid: false, ok: false, reason: `Attempt ${att.id} must be the Gemini initial worker at null effort` };
+        }
+      } else if (att.phase === 'repair') {
+        if (att.tier !== 'worker') {
+          return { valid: false, ok: false, reason: `Attempt ${att.id} must have tier 'worker'` };
+        }
+        const expectedModel = state.fallback_occurred && fallbackSeen ? LUNA_MODEL : GEMINI_MODEL;
+        const expectedEffort = expectedModel === LUNA_MODEL ? LUNA_EFFORT : null;
+        if (att.model !== expectedModel || att.effort !== expectedEffort) {
+          return {
+            valid: false,
+            ok: false,
+            reason: `Attempt ${att.id} worker model/effort does not match the active worker sequence`
+          };
+        }
+      } else if (att.phase === 'fallback_worker') {
+        if (fallbackSeen || att.tier !== 'worker' || att.model !== LUNA_MODEL || att.effort !== LUNA_EFFORT) {
+          return { valid: false, ok: false, reason: `Attempt ${att.id} must be the single Luna fallback worker invocation` };
+        }
+        fallbackSeen = true;
+      } else if (att.phase === 'senior' || att.phase === 'escalation') {
+        if (att.tier !== 'senior' || att.model !== SOL_MODEL || att.effort !== SOL_EFFORT) {
+          return { valid: false, ok: false, reason: `Attempt ${att.id} senior model/effort mismatch for Sol senior (expected ${SOL_MODEL} at ${SOL_EFFORT})` };
+        }
+      } else {
+        return { valid: false, ok: false, reason: `Attempt ${att.id} has invalid phase: ${att.phase}` };
+      }
+    } else if (state.origin === BUDGET_ORIGINS.SOL_INITIAL) {
+      if (att.tier !== 'senior' || att.model !== SOL_MODEL || att.effort !== SOL_EFFORT) {
+        return { valid: false, ok: false, reason: `Attempt ${att.id} senior model/effort mismatch for Sol initial (expected ${SOL_MODEL} at ${SOL_EFFORT})` };
+      }
+    }
+  }
+
+  // Active attempt and pending reconcile consistency
+  if (typeof state.pending_reconcile !== 'boolean') {
+    return { valid: false, ok: false, reason: 'pending_reconcile must be a boolean' };
+  }
+
+  if (state.attempts.length === 0) {
+    if (state.active_attempt_id !== null) {
+      return { valid: false, ok: false, reason: 'active_attempt_id must be null when attempts is empty' };
+    }
+    if (state.pending_reconcile !== false) {
+      return { valid: false, ok: false, reason: 'pending_reconcile must be false when attempts is empty' };
+    }
+  } else {
+    const lastAttempt = state.attempts[state.attempts.length - 1];
+    if (state.active_attempt_id !== lastAttempt.id) {
+      return {
+        valid: false,
+        ok: false,
+        reason: `active_attempt_id (${state.active_attempt_id}) does not match last attempt ID (${lastAttempt.id})`
+      };
+    }
+    if (state.pending_reconcile === true && lastAttempt.status !== 'INTERRUPTED') {
+      return { valid: false, ok: false, reason: 'pending_reconcile is true but active attempt is not INTERRUPTED' };
+    }
+    if (state.pending_reconcile === false && lastAttempt.status === 'INTERRUPTED') {
+      return { valid: false, ok: false, reason: 'pending_reconcile is false but active attempt is INTERRUPTED' };
+    }
+  }
+
+  return { valid: true, ok: true };
+}
+
 /**
  * Validates budget state structural integrity and consistency.
  * Reconciles counters with historical attempt reservations.
@@ -422,69 +922,74 @@ export function createBudget(origin) {
  */
 export function validateBudgetState(state) {
   if (!state || typeof state !== 'object' || Array.isArray(state)) {
-    return { valid: false, reason: 'Budget state must be a non-null object' };
+    return { valid: false, ok: false, reason: 'Budget state must be a non-null object' };
+  }
+
+  if (state.schema_version === 'qq.workflow.budget.v2') {
+    return validateBudgetStateV2(state);
   }
 
   // Schema and policy
   if (state.schema_version !== 'qq.workflow.budget.v1') {
-    return { valid: false, reason: `Invalid or missing budget schema_version: ${state.schema_version}` };
+    return { valid: false, ok: false, reason: `Invalid or missing budget schema_version: ${state.schema_version}` };
   }
   if (state.policy !== POLICY_DISCRIMINATOR) {
-    return { valid: false, reason: `Invalid or missing budget policy: ${state.policy}` };
+    return { valid: false, ok: false, reason: `Invalid or missing budget policy: ${state.policy}` };
   }
   if (state.origin !== BUDGET_ORIGINS.GEMINI_INITIAL && state.origin !== BUDGET_ORIGINS.ASTRA_INITIAL) {
-    return { valid: false, reason: `Unsupported budget origin: ${state.origin}` };
+    return { valid: false, ok: false, reason: `Unsupported budget origin: ${state.origin}` };
   }
 
   // Counters: finite nonnegative integers required
   if (typeof state.initial_count !== 'number' || !Number.isInteger(state.initial_count) || state.initial_count < 0) {
-    return { valid: false, reason: `initial_count must be a finite nonnegative integer (got ${state.initial_count})` };
+    return { valid: false, ok: false, reason: `initial_count must be a finite nonnegative integer (got ${state.initial_count})` };
   }
   if (typeof state.repair_count !== 'number' || !Number.isInteger(state.repair_count) || state.repair_count < 0) {
-    return { valid: false, reason: `repair_count must be a finite nonnegative integer (got ${state.repair_count})` };
+    return { valid: false, ok: false, reason: `repair_count must be a finite nonnegative integer (got ${state.repair_count})` };
   }
   if (typeof state.escalation_count !== 'number' || !Number.isInteger(state.escalation_count) || state.escalation_count < 0) {
-    return { valid: false, reason: `escalation_count must be a finite nonnegative integer (got ${state.escalation_count})` };
+    return { valid: false, ok: false, reason: `escalation_count must be a finite nonnegative integer (got ${state.escalation_count})` };
   }
 
   // Origin-specific counter bounds
   if (state.origin === BUDGET_ORIGINS.GEMINI_INITIAL) {
     if (state.initial_count > 1) {
-      return { valid: false, reason: `initial_count exceeds maximum of 1 for GEMINI_INITIAL (got ${state.initial_count})` };
+      return { valid: false, ok: false, reason: `initial_count exceeds maximum of 1 for GEMINI_INITIAL (got ${state.initial_count})` };
     }
     if (state.repair_count > 2) {
-      return { valid: false, reason: `repair_count exceeds maximum of 2 for GEMINI_INITIAL (got ${state.repair_count})` };
+      return { valid: false, ok: false, reason: `repair_count exceeds maximum of 2 for GEMINI_INITIAL (got ${state.repair_count})` };
     }
     if (state.escalation_count > 1) {
-      return { valid: false, reason: `escalation_count exceeds maximum of 1 for GEMINI_INITIAL (got ${state.escalation_count})` };
+      return { valid: false, ok: false, reason: `escalation_count exceeds maximum of 1 for GEMINI_INITIAL (got ${state.escalation_count})` };
     }
   } else if (state.origin === BUDGET_ORIGINS.ASTRA_INITIAL) {
     if (state.initial_count > 1) {
-      return { valid: false, reason: `initial_count exceeds maximum of 1 for ASTRA_INITIAL (got ${state.initial_count})` };
+      return { valid: false, ok: false, reason: `initial_count exceeds maximum of 1 for ASTRA_INITIAL (got ${state.initial_count})` };
     }
     if (state.repair_count > 1) {
-      return { valid: false, reason: `repair_count exceeds maximum of 1 for ASTRA_INITIAL (got ${state.repair_count})` };
+      return { valid: false, ok: false, reason: `repair_count exceeds maximum of 1 for ASTRA_INITIAL (got ${state.repair_count})` };
     }
     if (state.escalation_count !== 0) {
-      return { valid: false, reason: `escalation_count must be 0 for ASTRA_INITIAL (got ${state.escalation_count})` };
+      return { valid: false, ok: false, reason: `escalation_count must be 0 for ASTRA_INITIAL (got ${state.escalation_count})` };
     }
   }
 
   // Escalation flag check
   if (typeof state.escalation_used !== 'boolean') {
-    return { valid: false, reason: 'escalation_used must be a boolean' };
+    return { valid: false, ok: false, reason: 'escalation_used must be a boolean' };
   }
   const expectedEscalationUsed = state.escalation_count > 0;
   if (state.escalation_used !== expectedEscalationUsed) {
     return {
       valid: false,
+      ok: false,
       reason: `escalation_used (${state.escalation_used}) contradicts escalation_count (${state.escalation_count})`
     };
   }
 
   // Attempts array
   if (!Array.isArray(state.attempts)) {
-    return { valid: false, reason: 'attempts must be an array' };
+    return { valid: false, ok: false, reason: 'attempts must be an array' };
   }
 
   // Reconcile counters with attempt history
@@ -495,24 +1000,28 @@ export function validateBudgetState(state) {
   if (state.initial_count !== initialAttempts.length) {
     return {
       valid: false,
+      ok: false,
       reason: `initial_count (${state.initial_count}) does not match initial attempt history (${initialAttempts.length})`
     };
   }
   if (state.repair_count !== repairAttempts.length) {
     return {
       valid: false,
+      ok: false,
       reason: `repair_count (${state.repair_count}) does not match repair attempt history (${repairAttempts.length})`
     };
   }
   if (state.escalation_count !== escalationAttempts.length) {
     return {
       valid: false,
+      ok: false,
       reason: `escalation_count (${state.escalation_count}) does not match escalation attempt history (${escalationAttempts.length})`
     };
   }
   if (state.attempts.length !== (state.initial_count + state.repair_count + state.escalation_count)) {
     return {
       valid: false,
+      ok: false,
       reason: `Total attempts (${state.attempts.length}) contradicts sum of counters (${state.initial_count + state.repair_count + state.escalation_count})`
     };
   }
@@ -522,92 +1031,496 @@ export function validateBudgetState(state) {
   for (let i = 0; i < state.attempts.length; i++) {
     const att = state.attempts[i];
     if (!att || typeof att !== 'object') {
-      return { valid: false, reason: `Attempt at index ${i} is not a valid object` };
+      return { valid: false, ok: false, reason: `Attempt at index ${i} is not a valid object` };
     }
     const expectedId = `attempt-${i + 1}`;
     if (att.id !== expectedId) {
-      return { valid: false, reason: `Attempt at index ${i} ID mismatch: expected ${expectedId}, got ${att.id}` };
+      return { valid: false, ok: false, reason: `Attempt at index ${i} ID mismatch: expected ${expectedId}, got ${att.id}` };
     }
     if (att.origin !== state.origin) {
-      return { valid: false, reason: `Attempt ${att.id} origin (${att.origin}) does not match state origin (${state.origin})` };
+      return { valid: false, ok: false, reason: `Attempt ${att.id} origin (${att.origin}) does not match state origin (${state.origin})` };
     }
     if (!VALID_STATUSES.has(att.status)) {
-      return { valid: false, reason: `Attempt ${att.id} has invalid status: ${att.status}` };
+      return { valid: false, ok: false, reason: `Attempt ${att.id} has invalid status: ${att.status}` };
     }
 
     if (i === 0) {
       if (att.phase !== 'initial') {
-        return { valid: false, reason: `First attempt ${att.id} must have phase 'initial'` };
+        return { valid: false, ok: false, reason: `First attempt ${att.id} must have phase 'initial'` };
       }
     } else {
       if (att.phase === 'initial') {
-        return { valid: false, reason: `Subsequent attempt ${att.id} cannot have phase 'initial'` };
+        return { valid: false, ok: false, reason: `Subsequent attempt ${att.id} cannot have phase 'initial'` };
       }
     }
 
     if (state.origin === BUDGET_ORIGINS.GEMINI_INITIAL) {
       if (att.phase === 'initial') {
         if (att.tier !== 'worker' || att.model !== GEMINI_MODEL || att.effort !== null) {
-          return { valid: false, reason: `Attempt ${att.id} worker/model/effort mismatch for Gemini initial` };
+          return { valid: false, ok: false, reason: `Attempt ${att.id} worker/model/effort mismatch for Gemini initial` };
         }
       } else if (att.phase === 'repair') {
         if (att.tier !== 'worker' || att.model !== GEMINI_MODEL || att.effort !== null) {
-          return { valid: false, reason: `Attempt ${att.id} worker/model/effort mismatch for Gemini repair` };
+          return { valid: false, ok: false, reason: `Attempt ${att.id} worker/model/effort mismatch for Gemini repair` };
         }
       } else if (att.phase === 'escalation') {
         if (att.tier !== 'senior' || att.model !== ASTRA_MODEL || att.effort !== ASTRA_EFFORT) {
-          return { valid: false, reason: `Attempt ${att.id} senior/model/effort mismatch for Astra escalation` };
+          return { valid: false, ok: false, reason: `Attempt ${att.id} senior/model/effort mismatch for Astra escalation` };
         }
         if (i !== 3) {
-          return { valid: false, reason: `Senior escalation attempt ${att.id} must be attempt-4` };
+          return { valid: false, ok: false, reason: `Senior escalation attempt ${att.id} must be attempt-4` };
         }
       } else {
-        return { valid: false, reason: `Attempt ${att.id} has invalid phase: ${att.phase}` };
+        return { valid: false, ok: false, reason: `Attempt ${att.id} has invalid phase: ${att.phase}` };
       }
     } else if (state.origin === BUDGET_ORIGINS.ASTRA_INITIAL) {
       if (att.phase === 'initial') {
         if (att.tier !== 'senior' || att.model !== ASTRA_MODEL || att.effort !== ASTRA_EFFORT) {
-          return { valid: false, reason: `Attempt ${att.id} senior/model/effort mismatch for Astra initial` };
+          return { valid: false, ok: false, reason: `Attempt ${att.id} senior/model/effort mismatch for Astra initial` };
         }
       } else if (att.phase === 'repair') {
         if (att.tier !== 'senior' || att.model !== ASTRA_MODEL || att.effort !== ASTRA_EFFORT) {
-          return { valid: false, reason: `Attempt ${att.id} senior/model/effort mismatch for Astra repair` };
+          return { valid: false, ok: false, reason: `Attempt ${att.id} senior/model/effort mismatch for Astra repair` };
         }
       } else {
-        return { valid: false, reason: `Attempt ${att.id} has invalid phase for Astra initial: ${att.phase}` };
+        return { valid: false, ok: false, reason: `Attempt ${att.id} has invalid phase for Astra initial: ${att.phase}` };
       }
     }
   }
 
   // Active attempt and pending reconcile consistency
   if (typeof state.pending_reconcile !== 'boolean') {
-    return { valid: false, reason: 'pending_reconcile must be a boolean' };
+    return { valid: false, ok: false, reason: 'pending_reconcile must be a boolean' };
   }
 
   if (state.attempts.length === 0) {
     if (state.active_attempt_id !== null) {
-      return { valid: false, reason: 'active_attempt_id must be null when attempts is empty' };
+      return { valid: false, ok: false, reason: 'active_attempt_id must be null when attempts is empty' };
     }
     if (state.pending_reconcile !== false) {
-      return { valid: false, reason: 'pending_reconcile must be false when attempts is empty' };
+      return { valid: false, ok: false, reason: 'pending_reconcile must be false when attempts is empty' };
     }
   } else {
     const lastAttempt = state.attempts[state.attempts.length - 1];
     if (state.active_attempt_id !== lastAttempt.id) {
       return {
         valid: false,
+        ok: false,
         reason: `active_attempt_id (${state.active_attempt_id}) does not match last attempt ID (${lastAttempt.id})`
       };
     }
     if (state.pending_reconcile === true && lastAttempt.status !== 'INTERRUPTED') {
-      return { valid: false, reason: 'pending_reconcile is true but active attempt is not INTERRUPTED' };
+      return { valid: false, ok: false, reason: 'pending_reconcile is true but active attempt is not INTERRUPTED' };
     }
     if (state.pending_reconcile === false && lastAttempt.status === 'INTERRUPTED') {
-      return { valid: false, reason: 'pending_reconcile is false but active attempt is INTERRUPTED' };
+      return { valid: false, ok: false, reason: 'pending_reconcile is false but active attempt is INTERRUPTED' };
     }
   }
 
-  return { valid: true };
+  return { valid: true, ok: true };
+}
+
+/**
+ * Pure state machine advancing budget for V2.
+ */
+function advanceBudgetV2(state, eventType, event) {
+  const attempts = [...state.attempts];
+  const initialCount = state.initial_count;
+  const repairCount = state.repair_count;
+  const seniorCount = state.senior_count ?? state.escalation_count ?? 0;
+  const activeAttemptId = state.active_attempt_id;
+  const pendingReconcile = state.pending_reconcile;
+  const activeWorker = state.active_worker;
+
+  // --- EVENT: INTERRUPTED ---
+  if (eventType === BUDGET_EVENTS.INTERRUPTED) {
+    if (attempts.length === 0 || !activeAttemptId) {
+      return {
+        state,
+        action: BUDGET_ACTIONS.BLOCKED,
+        reason: 'No active attempt available to interrupt'
+      };
+    }
+    if (pendingReconcile) {
+      return {
+        state,
+        action: BUDGET_ACTIONS.WAIT,
+        reason: `Attempt ${activeAttemptId} is already interrupted; reconcile required before proceeding`
+      };
+    }
+
+    const updatedAttempts = attempts.map(att => {
+      if (att.id === activeAttemptId) {
+        return Object.freeze({ ...att, status: 'INTERRUPTED' });
+      }
+      return att;
+    });
+
+    const nextState = Object.freeze({
+      ...state,
+      active_attempt_id: activeAttemptId,
+      pending_reconcile: true,
+      attempts: Object.freeze(updatedAttempts)
+    });
+
+    return {
+      state: nextState,
+      action: BUDGET_ACTIONS.WAIT,
+      reason: `Attempt ${activeAttemptId} interrupted; reconcile required before proceeding; counters retained`
+    };
+  }
+
+  // --- EVENT: RESUME_VALIDATED ---
+  if (eventType === BUDGET_EVENTS.RESUME_VALIDATED) {
+    if (!pendingReconcile || !activeAttemptId) {
+      return {
+        state,
+        action: BUDGET_ACTIONS.BLOCKED,
+        reason: 'No interrupted attempt pending reconcile'
+      };
+    }
+
+    const updatedAttempts = attempts.map(att => {
+      if (att.id === activeAttemptId) {
+        return Object.freeze({ ...att, status: 'RESUMED' });
+      }
+      return att;
+    });
+
+    const nextState = Object.freeze({
+      ...state,
+      active_attempt_id: activeAttemptId,
+      pending_reconcile: false,
+      attempts: Object.freeze(updatedAttempts)
+    });
+
+    return {
+      state: nextState,
+      action: BUDGET_ACTIONS.RESUME,
+      reason: `Resuming validated interrupted attempt ${activeAttemptId}`
+    };
+  }
+
+  // --- GUARD: NEW LAUNCHES BLOCKED WHILE PENDING RECONCILE ---
+  if (pendingReconcile) {
+    return {
+      state,
+      action: BUDGET_ACTIONS.BLOCKED,
+      reason: `Interrupted attempt ${activeAttemptId} pending reconcile; new launches blocked`
+    };
+  }
+
+  // --- EVENT: FALLBACK_TRIGGERED ---
+  if (eventType === BUDGET_EVENTS.FALLBACK_TRIGGERED) {
+    if (state.origin !== BUDGET_ORIGINS.GEMINI_INITIAL) {
+      return {
+        state,
+        action: BUDGET_ACTIONS.BLOCKED,
+        reason: `Fallback to Luna only allowed for GEMINI_INITIAL (got ${state.origin})`
+      };
+    }
+    if (state.fallback_occurred || state.active_worker === 'luna') {
+      return {
+        state,
+        action: BUDGET_ACTIONS.BLOCKED,
+        reason: 'Fallback to Luna already occurred; cannot fallback from Luna'
+      };
+    }
+    if (initialCount !== 1 || attempts.length === 0 || activeAttemptId !== attempts[attempts.length - 1].id || activeWorker !== 'gemini') {
+      return {
+        state,
+        action: BUDGET_ACTIONS.BLOCKED,
+        reason: 'Fallback to Luna requires one completed Gemini initial/repair attempt with Gemini still active'
+      };
+    }
+    const reason = typeof event === 'object' && event?.reason ? event.reason : 'INVOCATION_FAILURE';
+    const failedInvocation = typeof event === 'object' && event?.failed_invocation ? event.failed_invocation : null;
+    if (!failedInvocation) {
+      return {
+        state,
+        action: BUDGET_ACTIONS.BLOCKED,
+        reason: 'Fallback to Luna requires a recorded failed Gemini invocation'
+      };
+    }
+    const failedCheck = validateFailedInvocationShape(failedInvocation, state.failed_invocations.length);
+    if (!failedCheck.ok || failedInvocation.provider !== 'google') {
+      return {
+        state,
+        action: BUDGET_ACTIONS.BLOCKED,
+        reason: failedCheck.ok ? 'Fallback failed invocation provider must be google' : failedCheck.reason
+      };
+    }
+    const failedInvocationId = failedInvocation.bridge_run_id;
+    const attemptId = `attempt-${attempts.length + 1}`;
+    const rawHandoff = typeof event === 'object' && event?.handoff ? event.handoff : {
+      from_worker: 'gemini',
+      to_worker: 'luna',
+      reason,
+      timestamp: new Date().toISOString()
+    };
+    if (rawHandoff.failed_invocation_id != null && rawHandoff.failed_invocation_id !== failedInvocationId) {
+      return {
+        state,
+        action: BUDGET_ACTIONS.BLOCKED,
+        reason: 'Fallback handoff failed_invocation_id must match the recorded Gemini invocation'
+      };
+    }
+    const handoffPayload = {
+      from_worker: rawHandoff.from_worker ?? 'gemini',
+      to_worker: rawHandoff.to_worker ?? 'luna',
+      reason: rawHandoff.reason ?? reason,
+      timestamp: rawHandoff.timestamp ?? new Date().toISOString(),
+      attempt_id: rawHandoff.attempt_id ?? attemptId,
+      failed_invocation_id: failedInvocationId
+    };
+    const digest = handoffDigest(handoffPayload);
+    const finalizedHandoff = Object.freeze({ ...handoffPayload, digest });
+    const nextFailed = failedInvocation
+      ? [...state.failed_invocations, Object.freeze(failedInvocation)]
+      : [...state.failed_invocations];
+    const nextHandoffHistory = Object.freeze([finalizedHandoff]);
+
+    const newAttempt = Object.freeze({
+      id: attemptId,
+      origin: BUDGET_ORIGINS.GEMINI_INITIAL,
+      phase: 'fallback_worker',
+      tier: 'worker',
+      model: LUNA_MODEL,
+      effort: LUNA_EFFORT,
+      status: 'LAUNCHED'
+    });
+
+    const nextState = Object.freeze({
+      ...state,
+      active_worker: 'luna',
+      fallback_occurred: true,
+      fallback_reason: finalizedHandoff.reason,
+      fallback_handoff: finalizedHandoff,
+      handoff_history: nextHandoffHistory,
+      handoff_digest: digest,
+      active_attempt_id: attemptId,
+      pending_reconcile: false,
+      attempts: Object.freeze([...attempts, newAttempt]),
+      failed_invocations: Object.freeze(nextFailed)
+    });
+
+    return {
+      state: nextState,
+      action: BUDGET_ACTIONS.LAUNCH,
+      reason: `Fallback to Luna Max worker: ${reason}`
+    };
+  }
+
+  // --- EVENT: INITIAL ---
+  if (eventType === BUDGET_EVENTS.INITIAL) {
+    if (initialCount > 0 || attempts.length > 0) {
+      return {
+        state,
+        action: BUDGET_ACTIONS.BLOCKED,
+        reason: 'Initial invocation already consumed'
+      };
+    }
+
+    if (state.origin === BUDGET_ORIGINS.GEMINI_INITIAL) {
+      const isLuna = activeWorker === 'luna';
+      const newAttempt = Object.freeze({
+        id: 'attempt-1',
+        origin: BUDGET_ORIGINS.GEMINI_INITIAL,
+        phase: 'initial',
+        tier: 'worker',
+        model: isLuna ? LUNA_MODEL : GEMINI_MODEL,
+        effort: isLuna ? LUNA_EFFORT : null,
+        status: 'LAUNCHED'
+      });
+      const nextState = Object.freeze({
+        ...state,
+        initial_count: 1,
+        active_attempt_id: newAttempt.id,
+        pending_reconcile: false,
+        attempts: Object.freeze([newAttempt])
+      });
+      return {
+        state: nextState,
+        action: BUDGET_ACTIONS.LAUNCH,
+        reason: `Initial ${isLuna ? 'Luna' : 'Gemini'} worker invocation`
+      };
+    }
+
+    if (state.origin === BUDGET_ORIGINS.SOL_INITIAL) {
+      const newAttempt = Object.freeze({
+        id: 'attempt-1',
+        origin: BUDGET_ORIGINS.SOL_INITIAL,
+        phase: 'initial',
+        tier: 'senior',
+        model: SOL_MODEL,
+        effort: SOL_EFFORT,
+        status: 'LAUNCHED'
+      });
+      const nextState = Object.freeze({
+        ...state,
+        initial_count: 1,
+        active_attempt_id: newAttempt.id,
+        pending_reconcile: false,
+        attempts: Object.freeze([newAttempt])
+      });
+      return {
+        state: nextState,
+        action: BUDGET_ACTIONS.LAUNCH,
+        reason: 'Initial Sol senior invocation'
+      };
+    }
+  }
+
+  // --- EVENT: REPAIR_REQUESTED ---
+  if (eventType === BUDGET_EVENTS.REPAIR_REQUESTED) {
+    if (initialCount === 0) {
+      return {
+        state,
+        action: BUDGET_ACTIONS.BLOCKED,
+        reason: 'Cannot request repair before initial attempt'
+      };
+    }
+
+    // GEMINI_INITIAL repair progression: 4 shared worker repair rounds, then up to 2 senior passes
+    if (state.origin === BUDGET_ORIGINS.GEMINI_INITIAL) {
+      // 1. In-budget worker repairs (up to 4 shared repairs between Gemini and Luna)
+      if (repairCount < 4 && seniorCount === 0) {
+        const attemptId = `attempt-${attempts.length + 1}`;
+        const nextRepairCount = repairCount + 1;
+        const isLuna = activeWorker === 'luna';
+        const newAttempt = Object.freeze({
+          id: attemptId,
+          origin: BUDGET_ORIGINS.GEMINI_INITIAL,
+          phase: 'repair',
+          tier: 'worker',
+          model: isLuna ? LUNA_MODEL : GEMINI_MODEL,
+          effort: isLuna ? LUNA_EFFORT : null,
+          status: 'LAUNCHED'
+        });
+        const nextState = Object.freeze({
+          ...state,
+          repair_count: nextRepairCount,
+          active_attempt_id: attemptId,
+          pending_reconcile: false,
+          attempts: Object.freeze([...attempts, newAttempt])
+        });
+        return {
+          state: nextState,
+          action: BUDGET_ACTIONS.LAUNCH,
+          reason: `${isLuna ? 'Luna' : 'Gemini'} worker repair invocation ${nextRepairCount} of 4`
+        };
+      }
+
+      // 2. Senior escalation: Sol senior pass 1 (handling pass)
+      if (repairCount === 4 && seniorCount === 0) {
+        const attemptId = `attempt-${attempts.length + 1}`;
+        const newAttempt = Object.freeze({
+          id: attemptId,
+          origin: BUDGET_ORIGINS.GEMINI_INITIAL,
+          phase: 'escalation',
+          tier: 'senior',
+          model: SOL_MODEL,
+          effort: SOL_EFFORT,
+          status: 'LAUNCHED'
+        });
+        const nextState = Object.freeze({
+          ...state,
+          senior_count: 1,
+          senior_used: true,
+          escalation_count: 1,
+          escalation_used: true,
+          active_attempt_id: attemptId,
+          pending_reconcile: false,
+          attempts: Object.freeze([...attempts, newAttempt])
+        });
+        return {
+          state: nextState,
+          action: BUDGET_ACTIONS.LAUNCH,
+          reason: 'Senior escalation pass 1 of 2 to Sol Medium (after 4 worker repairs)'
+        };
+      }
+
+      // 3. Senior escalation: Sol senior pass 2 (follow-up repair pass)
+      if (repairCount === 4 && seniorCount === 1) {
+        const attemptId = `attempt-${attempts.length + 1}`;
+        const newAttempt = Object.freeze({
+          id: attemptId,
+          origin: BUDGET_ORIGINS.GEMINI_INITIAL,
+          phase: 'escalation',
+          tier: 'senior',
+          model: SOL_MODEL,
+          effort: SOL_EFFORT,
+          status: 'LAUNCHED'
+        });
+        const nextState = Object.freeze({
+          ...state,
+          senior_count: 2,
+          senior_used: true,
+          escalation_count: 2,
+          escalation_used: true,
+          active_attempt_id: attemptId,
+          pending_reconcile: false,
+          attempts: Object.freeze([...attempts, newAttempt])
+        });
+        return {
+          state: nextState,
+          action: BUDGET_ACTIONS.LAUNCH,
+          reason: 'Senior follow-up repair pass 2 of 2 to Sol Medium'
+        };
+      }
+
+      // 4. Exhausted
+      return {
+        state,
+        action: BUDGET_ACTIONS.BLOCKED,
+        reason: 'Budget exhausted: 4 worker repairs + 2 Sol senior passes completed'
+      };
+    }
+
+    // SOL_INITIAL repair progression: 1 senior repair pass
+    if (state.origin === BUDGET_ORIGINS.SOL_INITIAL) {
+      if (repairCount < 1 && attempts.length < 2) {
+        const attemptId = `attempt-${attempts.length + 1}`;
+        const newAttempt = Object.freeze({
+          id: attemptId,
+          origin: BUDGET_ORIGINS.SOL_INITIAL,
+          phase: 'repair',
+          tier: 'senior',
+          model: SOL_MODEL,
+          effort: SOL_EFFORT,
+          status: 'LAUNCHED'
+        });
+        const nextState = Object.freeze({
+          ...state,
+          repair_count: 1,
+          senior_count: 0,
+          senior_used: false,
+          escalation_count: 0,
+          escalation_used: false,
+          active_attempt_id: attemptId,
+          pending_reconcile: false,
+          attempts: Object.freeze([...attempts, newAttempt])
+        });
+        return {
+          state: nextState,
+          action: BUDGET_ACTIONS.LAUNCH,
+          reason: 'Sol senior repair pass 1 of 1'
+        };
+      }
+
+      return {
+        state,
+        action: BUDGET_ACTIONS.BLOCKED,
+        reason: 'Sol initial budget exhausted: initial + 1 repair completed; self-escalation prohibited'
+      };
+    }
+  }
+
+  return {
+    state,
+    action: BUDGET_ACTIONS.BLOCKED,
+    reason: `Unhandled budget transition for V2: origin=${state.origin}, event=${eventType}`
+  };
 }
 
 /**
@@ -615,16 +1528,19 @@ export function validateBudgetState(state) {
  * Inputs are treated as immutable; returns a new frozen state and directive action.
  *
  * Budget allocation rules:
- * - GEMINI_INITIAL: 1 initial + 2 repair invocations (Gemini Flash High),
+ * - V1: GEMINI_INITIAL: 1 initial + 2 repair invocations (Gemini Flash High),
  *   then exactly 1 senior escalation invocation (Astra Low).
- * - ASTRA_INITIAL: 1 initial + 1 repair invocation (Astra Low). Never escalates to itself.
+ * - V1: ASTRA_INITIAL: 1 initial + 1 repair invocation (Astra Low). Never escalates to itself.
+ * - V2: GEMINI_INITIAL: 1 initial + 4 shared repair rounds between Gemini and Luna,
+ *   then up to 2 senior passes (Sol Medium).
+ * - V2: SOL_INITIAL: 1 initial + 1 repair pass (Sol Medium). Never escalates to itself.
  * - Unsupported origins or events fail closed with BLOCKED.
  * - Interrupted attempt retains reservation/ID and blocks new launches pending reconcile.
  * - Historical attempts define reservations; no extra invocations after senior.
  * - No implicit refund, counter reset, or supplemental budget.
  *
  * @param {object} state Current budget state
- * @param {string | { type: string, effort?: string }} event Budget event
+ * @param {string | { type: string, effort?: string, reason?: string, handoff?: object, failed_invocation?: object }} event Budget event
  * @returns {{ state: object, action: string, reason: string }}
  */
 export function advanceBudget(state, event) {
@@ -638,7 +1554,7 @@ export function advanceBudget(state, event) {
   }
 
   // Fail closed on unsupported origin
-  if (state.origin !== BUDGET_ORIGINS.GEMINI_INITIAL && state.origin !== BUDGET_ORIGINS.ASTRA_INITIAL) {
+  if (state.origin !== BUDGET_ORIGINS.GEMINI_INITIAL && state.origin !== BUDGET_ORIGINS.ASTRA_INITIAL && state.origin !== BUDGET_ORIGINS.SOL_INITIAL) {
     return {
       state,
       action: BUDGET_ACTIONS.BLOCKED,
@@ -666,16 +1582,31 @@ export function advanceBudget(state, event) {
     };
   }
 
-  // Reject Astra effort other than low
+  // Effort validation
   const requestedEffort = typeof event === 'object' ? event?.effort : null;
-  if (requestedEffort && requestedEffort !== ASTRA_EFFORT) {
-    return {
-      state,
-      action: BUDGET_ACTIONS.BLOCKED,
-      reason: `Astra effort other than '${ASTRA_EFFORT}' is rejected (requested: '${requestedEffort}')`
-    };
+  if (requestedEffort) {
+    if (state.policy === POLICY_V1 && requestedEffort !== ASTRA_EFFORT) {
+      return {
+        state,
+        action: BUDGET_ACTIONS.BLOCKED,
+        reason: `Astra effort other than '${ASTRA_EFFORT}' is rejected (requested: '${requestedEffort}')`
+      };
+    }
+    if (state.policy === POLICY_V2 && requestedEffort !== LUNA_EFFORT && requestedEffort !== SOL_EFFORT) {
+      return {
+        state,
+        action: BUDGET_ACTIONS.BLOCKED,
+        reason: `Invalid effort for V2: '${requestedEffort}'; expected '${LUNA_EFFORT}' or '${SOL_EFFORT}'`
+      };
+    }
   }
 
+  // Dispatch V2 budget state machine
+  if (state.schema_version === 'qq.workflow.budget.v2' || state.policy === POLICY_V2) {
+    return advanceBudgetV2(state, eventType, event);
+  }
+
+  // --- V1 State Machine ---
   const attempts = [...state.attempts];
   const initialCount = state.initial_count;
   const repairCount = state.repair_count;

@@ -130,8 +130,8 @@ function separateOutput(pilotDir,outputDir) {
 
 export async function isControlledPilot(pilotDir,config=null){
   if(config?.schema_version==='qq.bridge.v2')return true;
-  try{const s=await readJson(path.join(pilotDir,'state.json'));if(s?.schema_version==='qq.bridge.controlled-state.v1'||s?.policy==='CONTROLLED_DELEGATION_V1')return true;}catch{}
-  try{const r=await readJson(path.join(pilotDir,'receipt.json'));if(r?.policy==='CONTROLLED_DELEGATION_V1')return true;}catch{}
+  try{const s=await readJson(path.join(pilotDir,'state.json'));if(s?.schema_version==='qq.bridge.controlled-state.v1'||s?.policy==='CONTROLLED_DELEGATION_V1'||s?.policy==='CONTROLLED_DELEGATION_V2')return true;}catch{}
+  try{const r=await readJson(path.join(pilotDir,'receipt.json'));if(r?.policy==='CONTROLLED_DELEGATION_V1'||r?.policy==='CONTROLLED_DELEGATION_V2')return true;}catch{}
   return false;
 }
 

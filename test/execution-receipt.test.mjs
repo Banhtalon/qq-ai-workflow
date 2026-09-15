@@ -21,6 +21,15 @@ import {
   MANIFEST_SCHEMA,
   FROZEN_RECORD_SCHEMA,
   INVOCATION_RECORD_SCHEMA,
+  POLICY_V1,
+  POLICY_V2,
+  GEMINI_MODEL,
+  ASTRA_MODEL,
+  ASTRA_EFFORT,
+  LUNA_MODEL,
+  LUNA_EFFORT,
+  SOL_MODEL,
+  SOL_EFFORT,
   FAILURE_CODES
 } from '../scripts/lib/execution-receipt.mjs';
 
@@ -967,6 +976,268 @@ test('repair2 issue 3 regression: manifestDigest binds baseline_snapshots; CRLF 
     assert.equal(rTamperedBaseline.ok, false);
     assert.equal(rTamperedBaseline.failure_code, FAILURE_CODES.CONTENT_MISMATCH);
     assert.match(rTamperedBaseline.reason, /Manifest digest .* does not match receipt manifest_sha256/);
+  } finally {
+    await cleanup();
+  }
+});
+
+// =========================================================================
+// CONTROLLED_DELEGATION_V2 Receipts & Verification Tests
+// =========================================================================
+
+test('V2 receipt: Luna Max under POLICY_V2 validates effort and succeeds in verifyCandidate', async () => {
+  const { repo, baseSha, cleanup } = await createDisposableRepo();
+  try {
+    await writeFile(path.join(repo, 'tracked.txt'), 'luna worker update\n');
+    const manifest = captureManifest(repo, baseSha, ['tracked.txt']);
+    const { frozenRecord, invocationRecord, observed, bindings } = makeSampleRecords(baseSha, manifest);
+
+    // 1. Effort validation in buildReceipt: rejecting non-max efforts
+    const lunaObservedBadEffort = {
+      ...observed,
+      provider: 'openai',
+      requested_model: LUNA_MODEL,
+      requested_effort: 'high'
+    };
+    const lunaBindings = {
+      ...bindings,
+      policy: POLICY_V2,
+      designated_implementer: LUNA_MODEL
+    };
+    assert.throws(
+      () => buildReceipt(lunaObservedBadEffort, null, lunaBindings, manifest),
+      /Luna effort must be 'max'/
+    );
+
+    // Valid Luna Max receipt
+    const lunaObservedMax = {
+      ...observed,
+      provider: 'openai',
+      requested_model: LUNA_MODEL,
+      requested_effort: LUNA_EFFORT
+    };
+    const receipt = buildReceipt(lunaObservedMax, { actual_effort: LUNA_EFFORT }, lunaBindings, manifest);
+    assert.equal(receipt.policy, POLICY_V2);
+    assert.equal(receipt.designated_implementer, LUNA_MODEL);
+    assert.equal(receipt.observed_by_bridge.requested_effort, 'max');
+    assert.equal(receipt.reported_by_provider.actual_effort, 'max');
+
+    // Commit candidate
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-m', 'luna commit'], { cwd: repo, stdio: 'ignore' });
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+    const tree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: repo, encoding: 'utf8' }).trim();
+    const finalized = finalizeReceiptCandidate(receipt, { candidateHead: head, candidateTree: tree });
+
+    const frozenV2 = { ...frozenRecord, policy: POLICY_V2 };
+    const invocV2 = {
+      ...invocationRecord,
+      policy: POLICY_V2,
+      designated_implementer: LUNA_MODEL,
+      provider: 'openai',
+      requested_model: LUNA_MODEL,
+      requested_effort: LUNA_EFFORT,
+      manifest_sha256: receipt.manifest_sha256
+    };
+
+    // verifyCandidate succeeds for valid Luna Max
+    const rValid = verifyCandidate(repo, finalized, frozenV2, invocV2);
+    assert.equal(rValid.ok, true);
+
+    // Rejection if reported actual_effort is tampered to 'high'
+    const tamperedEffortReceipt = {
+      ...finalized,
+      reported_by_provider: { ...finalized.reported_by_provider, actual_effort: 'high' }
+    };
+    const rTampered = verifyCandidate(repo, tamperedEffortReceipt, frozenV2, invocV2);
+    assert.equal(rTampered.ok, false);
+    assert.equal(rTampered.failure_code, FAILURE_CODES.EXECUTION_MISMATCH);
+    assert.match(rTampered.reason, /Reported actual_effort \(high\) does not match requested_effort \(max\)/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('V2 receipt: Sol Medium under POLICY_V2 validates effort and succeeds in verifyCandidate', async () => {
+  const { repo, baseSha, cleanup } = await createDisposableRepo();
+  try {
+    await writeFile(path.join(repo, 'tracked.txt'), 'sol senior update\n');
+    const manifest = captureManifest(repo, baseSha, ['tracked.txt']);
+    const { frozenRecord, invocationRecord, observed, bindings } = makeSampleRecords(baseSha, manifest);
+
+    // 1. Rejecting non-medium efforts for Sol
+    const solObservedBadEffort = {
+      ...observed,
+      provider: 'openai',
+      requested_model: SOL_MODEL,
+      requested_effort: 'high'
+    };
+    const solBindings = {
+      ...bindings,
+      policy: POLICY_V2,
+      designated_implementer: SOL_MODEL
+    };
+    assert.throws(
+      () => buildReceipt(solObservedBadEffort, null, solBindings, manifest),
+      /Sol effort must be 'medium'/
+    );
+
+    // Valid Sol Medium receipt
+    const solObservedMedium = {
+      ...observed,
+      provider: 'openai',
+      requested_model: SOL_MODEL,
+      requested_effort: SOL_EFFORT
+    };
+    const receipt = buildReceipt(solObservedMedium, { actual_effort: SOL_EFFORT }, solBindings, manifest);
+    assert.equal(receipt.policy, POLICY_V2);
+    assert.equal(receipt.designated_implementer, SOL_MODEL);
+    assert.equal(receipt.observed_by_bridge.requested_effort, 'medium');
+
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-m', 'sol commit'], { cwd: repo, stdio: 'ignore' });
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+    const tree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: repo, encoding: 'utf8' }).trim();
+    const finalized = finalizeReceiptCandidate(receipt, { candidateHead: head, candidateTree: tree });
+
+    const frozenV2 = { ...frozenRecord, policy: POLICY_V2 };
+    const invocV2 = {
+      ...invocationRecord,
+      policy: POLICY_V2,
+      designated_implementer: SOL_MODEL,
+      provider: 'openai',
+      requested_model: SOL_MODEL,
+      requested_effort: SOL_EFFORT,
+      manifest_sha256: receipt.manifest_sha256
+    };
+
+    assert.equal(verifyCandidate(repo, finalized, frozenV2, invocV2).ok, true);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('Cross-policy validation: V1 rejects Luna/Sol; V2 rejects Astra; policy mismatch fails closed', async () => {
+  const { repo, baseSha, cleanup } = await createDisposableRepo();
+  try {
+    await writeFile(path.join(repo, 'tracked.txt'), 'candidate update\n');
+    const manifest = captureManifest(repo, baseSha, ['tracked.txt']);
+    const { frozenRecord, invocationRecord, observed, bindings } = makeSampleRecords(baseSha, manifest);
+
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-m', 'update commit'], { cwd: repo, stdio: 'ignore' });
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+    const tree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: repo, encoding: 'utf8' }).trim();
+
+    // 1. Astra under V2 fails closed
+    const astraObserved = { ...observed, requested_model: ASTRA_MODEL, requested_effort: ASTRA_EFFORT, provider: 'openai' };
+    const astraBindingsV2 = { ...bindings, policy: POLICY_V2, designated_implementer: ASTRA_MODEL };
+    const astraReceiptV2 = buildReceipt(astraObserved, { actual_effort: ASTRA_EFFORT }, astraBindingsV2, manifest);
+    const finalizedAstraV2 = finalizeReceiptCandidate(astraReceiptV2, { candidateHead: head, candidateTree: tree });
+
+    const rAstraOnV2 = verifyCandidate(repo, finalizedAstraV2,
+      { ...frozenRecord, policy: POLICY_V2 },
+      { ...invocationRecord, policy: POLICY_V2, designated_implementer: ASTRA_MODEL, requested_model: ASTRA_MODEL, requested_effort: ASTRA_EFFORT, manifest_sha256: finalizedAstraV2.manifest_sha256 }
+    );
+    assert.equal(rAstraOnV2.ok, false);
+    assert.equal(rAstraOnV2.failure_code, FAILURE_CODES.EXECUTION_MISMATCH);
+    assert.match(rAstraOnV2.reason, /requires designated_implementer to be/i);
+
+    // 2. Luna under V1 fails closed
+    const lunaObserved = { ...observed, requested_model: LUNA_MODEL, requested_effort: LUNA_EFFORT, provider: 'openai' };
+    const lunaBindingsV1 = { ...bindings, policy: POLICY_V1, designated_implementer: LUNA_MODEL };
+    const lunaReceiptV1 = buildReceipt(lunaObserved, { actual_effort: LUNA_EFFORT }, lunaBindingsV1, manifest);
+    const finalizedLunaV1 = finalizeReceiptCandidate(lunaReceiptV1, { candidateHead: head, candidateTree: tree });
+
+    const rLunaOnV1 = verifyCandidate(repo, finalizedLunaV1,
+      { ...frozenRecord, policy: POLICY_V1 },
+      { ...invocationRecord, policy: POLICY_V1, designated_implementer: LUNA_MODEL, requested_model: LUNA_MODEL, requested_effort: LUNA_EFFORT, manifest_sha256: finalizedLunaV1.manifest_sha256 }
+    );
+    assert.equal(rLunaOnV1.ok, false);
+    assert.equal(rLunaOnV1.failure_code, FAILURE_CODES.EXECUTION_MISMATCH);
+    assert.match(rLunaOnV1.reason, /requires designated_implementer to be/i);
+
+    // 3. Receipt policy V2 vs frozenRecord policy V1 fails closed
+    const lunaBindingsV2 = { ...bindings, policy: POLICY_V2, designated_implementer: LUNA_MODEL };
+    const lunaReceiptV2 = buildReceipt(lunaObserved, { actual_effort: LUNA_EFFORT }, lunaBindingsV2, manifest);
+    const finalizedLunaV2 = finalizeReceiptCandidate(lunaReceiptV2, { candidateHead: head, candidateTree: tree });
+
+    const rPolicyMismatch = verifyCandidate(repo, finalizedLunaV2,
+      { ...frozenRecord, policy: POLICY_V1 },
+      { ...invocationRecord, policy: POLICY_V2, designated_implementer: LUNA_MODEL, requested_model: LUNA_MODEL, requested_effort: LUNA_EFFORT, manifest_sha256: finalizedLunaV2.manifest_sha256 }
+    );
+    assert.equal(rPolicyMismatch.ok, false);
+    assert.equal(rPolicyMismatch.failure_code, FAILURE_CODES.CONTRACT_MISMATCH);
+    assert.match(rPolicyMismatch.reason, /Policy mismatch/i);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('Finding 1: buildReceipt and verifyCandidate strictly validate reported observed_models', async () => {
+  const { repo, baseSha, cleanup } = await createDisposableRepo();
+  try {
+    await writeFile(path.join(repo, 'tracked.txt'), 'candidate edit\n');
+    const manifest = captureManifest(repo, baseSha, ['tracked.txt']);
+    const { frozenRecord, invocationRecord, observed, bindings } = makeSampleRecords(baseSha, manifest);
+
+    // 1. Multiple conflicting observed_models throws
+    assert.throws(
+      () => buildReceipt(observed, { observed_models: [GEMINI_MODEL, 'gpt-4o'] }, bindings, manifest),
+      /Multiple conflicting observed_models reported/
+    );
+
+    // 2. Single mismatched observed_models throws
+    assert.throws(
+      () => buildReceipt(observed, { observed_models: ['gpt-4o'] }, bindings, manifest),
+      /Reported observed_models .* does not match/
+    );
+
+    // 3. Single matching observed_models sets actual_model and preserves observed_models
+    const rMatchingObserved = buildReceipt(
+      observed,
+      { observed_models: [GEMINI_MODEL] },
+      bindings,
+      manifest
+    );
+    assert.equal(rMatchingObserved.reported_by_provider.actual_model, GEMINI_MODEL);
+    assert.deepEqual(rMatchingObserved.reported_by_provider.observed_models, [GEMINI_MODEL]);
+
+    // 4. Empty observed_models leaves actual_model null (never inferred from requested)
+    const rEmptyObserved = buildReceipt(
+      observed,
+      { observed_models: [] },
+      bindings,
+      manifest
+    );
+    assert.equal(rEmptyObserved.reported_by_provider.actual_model, null);
+
+    // 5. verifyCandidate rejects receipt with conflicting or mismatched observed_models
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-m', 'candidate commit'], { cwd: repo, stdio: 'ignore' });
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+    const tree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: repo, encoding: 'utf8' }).trim();
+    const fin = finalizeReceiptCandidate(rMatchingObserved, { candidateHead: head, candidateTree: tree });
+
+    const tamperedMultiObserved = {
+      ...fin,
+      reported_by_provider: { ...fin.reported_by_provider, observed_models: [GEMINI_MODEL, 'gpt-4o'] }
+    };
+    const rMulti = verifyCandidate(repo, tamperedMultiObserved, frozenRecord, invocationRecord);
+    assert.equal(rMulti.ok, false);
+    assert.equal(rMulti.failure_code, FAILURE_CODES.EXECUTION_MISMATCH);
+
+    const tamperedMismatchObserved = {
+      ...fin,
+      reported_by_provider: { ...fin.reported_by_provider, observed_models: ['gpt-4o'] }
+    };
+    const rMismatch = verifyCandidate(repo, tamperedMismatchObserved, frozenRecord, invocationRecord);
+    assert.equal(rMismatch.ok, false);
+    assert.equal(rMismatch.failure_code, FAILURE_CODES.EXECUTION_MISMATCH);
+
+    // 6. Matching passes candidate verification
+    const rValid = verifyCandidate(repo, fin, frozenRecord, invocationRecord);
+    assert.equal(rValid.ok, true);
   } finally {
     await cleanup();
   }

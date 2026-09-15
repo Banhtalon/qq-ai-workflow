@@ -6,7 +6,7 @@ import {writeFile,readFile,mkdir,unlink,cp} from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
 import {fixture} from './fixture.mjs';
 import {git,readJson,writeJson,freeze,verify,readiness} from '../scripts/lib/workflow.mjs';
-import {execute,subscriptionEnv,failureStatus} from '../scripts/lib/bridge-process.mjs';
+import {execute,subscriptionEnv,failureReason,failureStatus} from '../scripts/lib/bridge-process.mjs';
 import {redactText} from '../scripts/lib/redact.mjs';
 import {parseProtocol,invocation,assertSubscriptionSettings,protocolMetadata} from '../scripts/lib/bridge-adapters.mjs';
 import {verifyReceiptChain} from '../scripts/lib/receipts.mjs';
@@ -378,6 +378,7 @@ test('protocol requires session, completion and valid result; requested model is
   const parsed=parseProtocol('google',JSON.stringify({session_id:'session',response:JSON.stringify(body),stats:{models:{'actual-model':{}}}}));
   assert.deepEqual(parsed.observed_models,['actual-model']);
   assert.equal(failureStatus({code:0,stdout:'quota issue discussed',stderr:''}),null);
+  assert.equal(failureReason({code:1,stdout:'',stderr:'ECONNREFUSED upstream provider'}),'CONNECTION_FAILURE');
 });
 test('Codex accepts only known transient transport notices and permits probe-only diagnostics',()=>{
   const diagnostic={verdict:'PASS',summary:'probe completed',material_findings:['read-only environment'],risk_checks_completed:false};

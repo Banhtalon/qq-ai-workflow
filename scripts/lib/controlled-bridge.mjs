@@ -13,13 +13,24 @@ import {
   createBudget,
   frozenPayloadDigest,
   projectFrozenPayload,
+  validateBudgetState,
+  handoffDigest,
+  POLICY_V1,
+  POLICY_V2,
   POLICY_DISCRIMINATOR,
+  POLICIES,
   BUDGET_ORIGINS,
   BUDGET_EVENTS,
   BUDGET_ACTIONS,
   GEMINI_MODEL,
   ASTRA_MODEL,
-  ASTRA_EFFORT
+  ASTRA_EFFORT,
+  LUNA_MODEL,
+  LUNA_EFFORT,
+  SOL_MODEL,
+  SOL_EFFORT,
+  TERRA_MODEL,
+  TERRA_EFFORT
 } from './execution-policy.mjs';
 import {
   captureManifest,
@@ -33,7 +44,10 @@ import {
 
 export const CONTROLLED_TASK_SCHEMA = 'qq.workflow.task.v10.1';
 export const CONTROLLED_CONFIG_SCHEMA = 'qq.bridge.v2';
-export const CONTROLLED_POLICY = POLICY_DISCRIMINATOR;
+export const CONTROLLED_POLICY_V1 = POLICY_V1;
+export const CONTROLLED_POLICY_V2 = POLICY_V2;
+export const CONTROLLED_POLICY = CONTROLLED_POLICY_V1;
+export const CONTROLLED_POLICIES = POLICIES;
 
 function validRelativePath(p) {
   return typeof p === 'string' &&
@@ -66,6 +80,70 @@ function assertWorkerScope(task, config, cwd) {
 
 function sha256Hex(content) {
   return createHash('sha256').update(content).digest('hex');
+}
+
+export function isEligibleWorkerFallback(workerResult) {
+  if (!workerResult || typeof workerResult !== 'object') return false;
+
+  const status = String(workerResult.status ?? '').toUpperCase();
+  const reason = String(workerResult.reason ?? workerResult.error ?? '').toUpperCase();
+
+  // Negative checks: Permission, authority, scope, test, review, contract, and evidence failures must never trigger fallback
+  if (workerResult.denied_actions && Array.isArray(workerResult.denied_actions) && workerResult.denied_actions.length > 0) {
+    return false;
+  }
+
+  // Normalize tokens across underscores, hyphens, dots, spaces
+  const combined = `${status} ${reason}`;
+  const tokens = combined.replace(/[^A-Z0-9]+/g, ' ').split(/\s+/).filter(Boolean);
+  const prohibitedTokens = new Set(['PERMISSION', 'AUTHORITY', 'AUTHENTICATION', 'SCOPE', 'TEST', 'REVIEW', 'CONTRACT', 'EVIDENCE']);
+  if (tokens.some(t => prohibitedTokens.has(t))) {
+    return false;
+  }
+
+  // Direct cases for common compound error codes
+  if (combined.includes('PERMISSION_DENIED') ||
+      combined.includes('AUTHORITY_DENIED') ||
+      combined.includes('TOOL_PERMISSION_DENIED') ||
+      combined.includes('SCOPE_VIOLATION') ||
+      combined.includes('CONTRACT_MISMATCH') ||
+      combined.includes('EVIDENCE_MISSING')) {
+    return false;
+  }
+
+  // Positive checks: provider availability, quota, model capability, timeout, crash, or invalid provider protocol
+  if (workerResult.timed_out === true || status === 'TIMED_OUT' || reason.includes('TIMED_OUT') || reason.includes('TIMEOUT')) {
+    return true;
+  }
+  if (status === 'WAITING_QUOTA' || status === 'RATE_LIMIT' || /QUOTA|RATE_LIMIT|RESOURCE_EXHAUSTED/.test(reason)) {
+    return true;
+  }
+  if (status === 'INVALID_PROTOCOL' || reason.includes('INVALID_PROTOCOL') || reason.includes('PROTOCOL ERROR') || reason.includes('INCOMPLETE')) {
+    return true;
+  }
+  if (status === 'WAITING_AVAILABILITY' || status === 'UNAVAILABLE' || reason.includes('UNAVAILABLE')) {
+    return true;
+  }
+
+  // Generic failures, including a bare nonzero process exit, fail closed. A
+  // fallback needs an explicit provider-execution classification.
+  const isCrashOrSpawn = reason.includes('EXECUTION_THROW') ||
+    reason.includes('CONNECTION_FAILURE') ||
+    reason.includes('PROVIDER_CRASH') ||
+    reason.includes('CRASH') ||
+    reason.includes('SPAWN') ||
+    reason.includes('ECONNREFUSED') ||
+    reason.includes('ETIMEDOUT') ||
+    reason.includes('ENOTFOUND') ||
+    reason.includes('ENOENT') ||
+    reason.includes('EPIPE') ||
+    reason.includes('UNAVAILABLE') ||
+    reason.includes('AVAILABILITY');
+  if (isCrashOrSpawn) {
+    return true;
+  }
+
+  return false;
 }
 
 const PRODUCT_CHECK_RESULT_SCHEMA = 'qq.workflow.product-check-result.v1';
@@ -326,7 +404,7 @@ function getActiveHooks(cwd) {
   }
 }
 
-export function validateControlledConfig(c) {
+export function validateControlledConfig(c, taskPolicy = null) {
   if (!c || typeof c !== 'object') {
     throw Error('Config must be a non-null object');
   }
@@ -370,9 +448,19 @@ export function validateControlledConfig(c) {
     }
   }
 
+  const isV2 = taskPolicy ? (taskPolicy === POLICY_V2) : (c.policy === POLICY_V2 || c.fallback_worker !== undefined);
+  if (!isV2 && c.fallback_worker !== undefined) {
+    throw Error('fallback_worker is not allowed under V1 policy');
+  }
+
   // Worker binding: Gemini 3.8 Flash High required
   if (!c.worker || typeof c.worker !== 'object') {
     throw Error('worker binding required');
+  }
+  if (isV2) {
+    if (c.worker.provider !== 'google') {
+      throw Error(`worker provider must be 'google', got '${c.worker.provider}'`);
+    }
   }
   const normWorkerModel = normalizeModelName(c.worker.model);
   if (normWorkerModel !== GEMINI_MODEL) {
@@ -382,40 +470,99 @@ export function validateControlledConfig(c) {
     throw Error('Gemini worker effort must be null');
   }
 
-  // Ordinary reviewer binding: Terra at effort xhigh required
+  // Ordinary reviewer binding
   if (!c.reviewer || typeof c.reviewer !== 'object') {
     throw Error('reviewer binding required');
   }
+  if (isV2) {
+    if (c.reviewer.provider !== 'openai') {
+      throw Error(`reviewer provider must be 'openai', got '${c.reviewer.provider}'`);
+    }
+  }
   const normReviewerModel = normalizeModelName(c.reviewer.model);
-  if (!normReviewerModel || (!normReviewerModel.includes('terra') && normReviewerModel !== 'terra')) {
-    throw Error(`normal reviewer model must be Terra, got '${c.reviewer.model}'`);
+  if (isV2) {
+    if (normReviewerModel !== TERRA_MODEL) {
+      throw Error(`normal reviewer model must be '${TERRA_MODEL}', got '${c.reviewer.model}'`);
+    }
+  } else {
+    if (normReviewerModel !== 'terra') {
+      throw Error(`normal reviewer model must be 'terra', got '${c.reviewer.model}'`);
+    }
   }
   if (c.reviewer.effort?.toLowerCase() !== 'xhigh') {
     throw Error(`normal reviewer effort must be 'xhigh', got '${c.reviewer.effort}'`);
   }
 
-  // Senior binding: exact gpt-6-astra, effort low
-  if (c.senior) {
-    const normSeniorModel = normalizeModelName(c.senior.model);
-    if (normSeniorModel !== ASTRA_MODEL) {
-      throw Error(`senior model must be '${ASTRA_MODEL}', got '${c.senior.model}'`);
+  if (isV2) {
+    // V2: Fallback worker binding: Luna at effort max required
+    if (!c.fallback_worker || typeof c.fallback_worker !== 'object') {
+      throw Error('fallback_worker binding required for V2');
     }
-    if (c.senior.effort?.toLowerCase() !== ASTRA_EFFORT) {
-      throw Error(`Astra senior effort must be '${ASTRA_EFFORT}', got '${c.senior.effort}'`);
+    if (c.fallback_worker.provider !== 'openai') {
+      throw Error(`fallback_worker provider must be 'openai', got '${c.fallback_worker.provider}'`);
     }
-  }
+    const normFallbackModel = normalizeModelName(c.fallback_worker.model);
+    if (normFallbackModel !== LUNA_MODEL) {
+      throw Error(`fallback_worker model must be '${LUNA_MODEL}', got '${c.fallback_worker.model}'`);
+    }
+    if (c.fallback_worker.effort?.toLowerCase() !== LUNA_EFFORT) {
+      throw Error(`Luna fallback_worker effort must be '${LUNA_EFFORT}', got '${c.fallback_worker.effort}'`);
+    }
 
-  // Elevated reviewer binding: exact gpt-6-astra, effort low
-  if ('elevated_reviewer' in c) {
-    if (!c.elevated_reviewer || typeof c.elevated_reviewer !== 'object') {
-      throw Error('elevated_reviewer binding required; must be Astra at low effort');
+    // V2: Senior binding: exact gpt-5.6-sol, effort medium
+    if (c.senior) {
+      if (c.senior.provider !== 'openai') {
+        throw Error(`senior provider must be 'openai', got '${c.senior.provider}'`);
+      }
+      const normSeniorModel = normalizeModelName(c.senior.model);
+      if (normSeniorModel !== SOL_MODEL) {
+        throw Error(`senior model must be '${SOL_MODEL}', got '${c.senior.model}'`);
+      }
+      if (c.senior.effort?.toLowerCase() !== SOL_EFFORT) {
+        throw Error(`Sol senior effort must be '${SOL_EFFORT}', got '${c.senior.effort}'`);
+      }
     }
-    const normElevatedModel = normalizeModelName(c.elevated_reviewer.model);
-    if (normElevatedModel !== ASTRA_MODEL) {
-      throw Error(`elevated reviewer model must be '${ASTRA_MODEL}', got '${c.elevated_reviewer.model}'`);
+
+    // V2: Elevated reviewer binding: exact gpt-5.6-sol, effort medium
+    if ('elevated_reviewer' in c) {
+      if (!c.elevated_reviewer || typeof c.elevated_reviewer !== 'object') {
+        throw Error('elevated_reviewer binding required; must be Sol at medium effort');
+      }
+      if (c.elevated_reviewer.provider !== 'openai') {
+        throw Error(`elevated reviewer provider must be 'openai', got '${c.elevated_reviewer.provider}'`);
+      }
+      const normElevatedModel = normalizeModelName(c.elevated_reviewer.model);
+      if (normElevatedModel !== SOL_MODEL) {
+        throw Error(`elevated reviewer model must be '${SOL_MODEL}', got '${c.elevated_reviewer.model}'`);
+      }
+      if (c.elevated_reviewer.effort?.toLowerCase() !== SOL_EFFORT) {
+        throw Error(`Sol elevated reviewer effort must be '${SOL_EFFORT}', got '${c.elevated_reviewer.effort}'`);
+      }
     }
-    if (c.elevated_reviewer.effort?.toLowerCase() !== ASTRA_EFFORT) {
-      throw Error(`Astra elevated reviewer effort must be '${ASTRA_EFFORT}', got '${c.elevated_reviewer.effort}'`);
+  } else {
+    // V1: Senior binding: exact gpt-6-astra, effort low
+    if (c.senior) {
+      const normSeniorModel = normalizeModelName(c.senior.model);
+      if (normSeniorModel !== ASTRA_MODEL) {
+        throw Error(`senior model must be '${ASTRA_MODEL}', got '${c.senior.model}'`);
+      }
+      if (c.senior.effort?.toLowerCase() !== ASTRA_EFFORT) {
+        throw Error(`Astra senior effort must be '${ASTRA_EFFORT}', got '${c.senior.effort}'`);
+      }
+    }
+
+    // V1: Elevated reviewer binding: exact gpt-6-astra, effort low
+    if ('elevated_reviewer' in c) {
+      if (!c.elevated_reviewer || typeof c.elevated_reviewer !== 'object') {
+        throw Error('elevated_reviewer binding required; must be Astra at low effort');
+      }
+      const normElevatedModel = normalizeModelName(c.elevated_reviewer.model);
+      if (normElevatedModel !== ASTRA_MODEL) {
+        throw Error(`elevated reviewer model must be '${ASTRA_MODEL}', got '${c.elevated_reviewer.model}'`);
+      }
+      if (c.elevated_reviewer.effort?.toLowerCase() !== ASTRA_EFFORT) {
+        throw Error(`Astra elevated reviewer effort must be '${ASTRA_EFFORT}', got '${c.elevated_reviewer.effort}'`);
+      }
     }
   }
 
@@ -426,7 +573,7 @@ export function validateControlledConfig(c) {
     }
   }
 
-  // Reject any Astra effort other than low across all bindings
+  // Effort constraints across all bindings
   for (const role of Object.keys(c)) {
     const b = c[role];
     if (b && typeof b === 'object' && b.model) {
@@ -434,6 +581,16 @@ export function validateControlledConfig(c) {
       if (nm === ASTRA_MODEL || nm?.includes('astra')) {
         if (b.effort?.toLowerCase() !== ASTRA_EFFORT) {
           throw Error(`Astra models require effort '${ASTRA_EFFORT}', got '${b.effort}'`);
+        }
+      }
+      if (nm === LUNA_MODEL || nm?.includes('luna')) {
+        if (b.effort?.toLowerCase() !== LUNA_EFFORT) {
+          throw Error(`Luna models require effort '${LUNA_EFFORT}', got '${b.effort}'`);
+        }
+      }
+      if (nm === SOL_MODEL || nm?.includes('sol')) {
+        if (b.effort?.toLowerCase() !== SOL_EFFORT) {
+          throw Error(`Sol models require effort '${SOL_EFFORT}', got '${b.effort}'`);
         }
       }
     }
@@ -621,8 +778,8 @@ export function validateControlledTask(t) {
     throw Error(`unsupported controlled task schema: expected ${CONTROLLED_TASK_SCHEMA}, got ${t.schema_version}`);
   }
   const policy = t.execution?.policy ?? t.policy;
-  if (policy !== CONTROLLED_POLICY) {
-    throw Error(`unsupported task policy: expected ${CONTROLLED_POLICY}, got ${policy}`);
+  if (!CONTROLLED_POLICIES.includes(policy)) {
+    throw Error(`unsupported task policy: expected ${CONTROLLED_POLICIES.join(' or ')}, got ${policy}`);
   }
   if (typeof t.task_id !== 'string' || !/^TASK-[A-Z0-9_-]+$/i.test(t.task_id)) {
     throw Error(`invalid task_id: ${t.task_id}`);
@@ -723,23 +880,29 @@ export function validateControlledTask(t) {
   return t;
 }
 
-export async function freezeControlledTask(taskPath, task) {
+export async function freezeControlledTask(taskPath, task, config = null) {
   const t = structuredClone(task);
   validateControlledTask(t);
+  const taskPolicy = t.execution?.policy ?? t.policy ?? CONTROLLED_POLICY;
   const digest = frozenPayloadDigest(t);
+  const configHash = config ? controlledConfigHash(config) : (t.config_sha256 ?? null);
   const lock = {
     schema_version: 'qq.workflow.lock.v10',
     task_id: t.task_id,
     revision: t.revision,
     contract_sha256: digest,
     base_sha: t.base_sha,
-    policy: CONTROLLED_POLICY,
-    contract_payload: projectFrozenPayload(t)
+    policy: taskPolicy,
+    contract_payload: projectFrozenPayload(t),
+    ...(configHash ? { config_sha256: configHash } : {})
   };
   await writeFile(taskPath + '.lock.json', JSON.stringify(lock, null, 2) + '\n', { flag: 'wx' });
   t.contract_sha256 = digest;
+  if (configHash) {
+    t.config_sha256 = configHash;
+  }
   await writeFile(taskPath, JSON.stringify(t, null, 2) + '\n');
-  return { status: 'FROZEN', contract_sha256: digest, lock };
+  return { status: 'FROZEN', contract_sha256: digest, config_sha256: configHash, lock };
 }
 
 export async function assertControlledContract(taskPath, task) {
@@ -760,8 +923,9 @@ export async function assertControlledContract(taskPath, task) {
   if (lock.base_sha !== task.base_sha) {
     throw Error(`Base SHA mismatch: task=${task.base_sha}, lock=${lock.base_sha}`);
   }
-  if (lock.policy !== undefined && lock.policy !== CONTROLLED_POLICY) {
-    throw Error(`Lock policy mismatch: ${lock.policy}; expected ${CONTROLLED_POLICY}`);
+  const taskPolicy = task.execution?.policy ?? task.policy ?? CONTROLLED_POLICY;
+  if (lock.policy !== undefined && lock.policy !== taskPolicy) {
+    throw Error(`Lock policy mismatch: ${lock.policy}; expected ${taskPolicy}`);
   }
   const taskForDigest = { ...task };
   if (lock.contract_payload && taskForDigest.lane !== lock.contract_payload.lane) {
@@ -872,27 +1036,41 @@ export async function runControlledBridge({
   packetDir = path.resolve(packetDir);
   await mkdir(packetDir, { recursive: true });
 
-  validateControlledConfig(config);
-
   const task = await readJson(taskPath);
   const lock = await assertControlledContract(taskPath, task);
+  const taskPolicy = task.execution?.policy ?? task.policy ?? CONTROLLED_POLICY;
+
+  validateControlledConfig(config, taskPolicy);
+
+  const configHash = controlledConfigHash(config);
+  if (task.execution?.config_sha256 && task.execution.config_sha256 !== configHash) {
+    throw Error(`CONFIG_MISMATCH: task.execution.config_sha256 does not match config hash (${configHash})`);
+  }
+  if (task.config_sha256 && task.config_sha256 !== configHash) {
+    throw Error(`CONFIG_MISMATCH: task.config_sha256 does not match config hash (${configHash})`);
+  }
+  if (lock.config_sha256 && lock.config_sha256 !== configHash) {
+    throw Error(`CONFIG_MISMATCH: lock.config_sha256 does not match config hash (${configHash})`);
+  }
 
   if (task.risk === 'ELEVATED' || task.lane === 'ELEVATED_PROCESS') {
+    const expElevatedModel = taskPolicy === POLICY_V2 ? SOL_MODEL : ASTRA_MODEL;
+    const expElevatedEffort = taskPolicy === POLICY_V2 ? SOL_EFFORT : ASTRA_EFFORT;
     if (!config.elevated_reviewer || typeof config.elevated_reviewer !== 'object') {
       return {
         status: 'BLOCKED_TECHNICAL',
         failure_code: 'CONFIG_MISMATCH',
-        error: 'ELEVATED process requires configured elevated_reviewer (exact gpt-6-astra at low effort)',
-        reason: 'ELEVATED process requires configured elevated_reviewer (exact gpt-6-astra at low effort)'
+        error: `ELEVATED process requires configured elevated_reviewer (exact ${expElevatedModel} at ${expElevatedEffort} effort)`,
+        reason: `ELEVATED process requires configured elevated_reviewer (exact ${expElevatedModel} at ${expElevatedEffort} effort)`
       };
     }
     const normElevated = normalizeModelName(config.elevated_reviewer.model);
-    if (normElevated !== ASTRA_MODEL || config.elevated_reviewer.effort?.toLowerCase() !== ASTRA_EFFORT) {
+    if (normElevated !== expElevatedModel || config.elevated_reviewer.effort?.toLowerCase() !== expElevatedEffort) {
       return {
         status: 'BLOCKED_TECHNICAL',
         failure_code: 'CONFIG_MISMATCH',
-        error: `ELEVATED process requires elevated_reviewer model '${ASTRA_MODEL}' at effort '${ASTRA_EFFORT}'`,
-        reason: `ELEVATED process requires elevated_reviewer model '${ASTRA_MODEL}' at effort '${ASTRA_EFFORT}'`
+        error: `ELEVATED process requires elevated_reviewer model '${expElevatedModel}' at effort '${expElevatedEffort}'`,
+        reason: `ELEVATED process requires elevated_reviewer model '${expElevatedModel}' at effort '${expElevatedEffort}'`
       };
     }
   }
@@ -908,7 +1086,7 @@ export async function runControlledBridge({
     }
   }
 
-  const canonicalCheck = await verifyCanonicalPolicy(cwd, task.execution?.policy ?? CONTROLLED_POLICY, '10.1');
+  const canonicalCheck = await verifyCanonicalPolicy(cwd, taskPolicy, '10.1');
   if (!canonicalCheck.ok) {
     return {
       status: 'BLOCKED_TECHNICAL',
@@ -938,7 +1116,7 @@ export async function runControlledBridge({
     }
     if (receipt.status !== 'ACCEPTED' ||
         receipt.platform !== 'win32' ||
-        (receipt.policy && receipt.policy !== CONTROLLED_POLICY) ||
+        (receipt.policy && receipt.policy !== taskPolicy) ||
         (receipt.bridge_source_hash ?? receipt.bridge_source_sha256 ?? receipt.bridge_hash) !== await bridgeSourceHash()) {
       throw Error('missing or stale live activation receipt');
     }
@@ -1001,6 +1179,101 @@ export async function runControlledBridge({
           !prior.budget || !prior.phase || typeof prior.in_flight !== 'boolean') {
         return stop('Conflicting checkpoint; reconciliation required');
       }
+      if (prior.policy && prior.policy !== taskPolicy) {
+        return stop('Checkpoint policy mismatch; reconciliation required');
+      }
+      if (taskPolicy === POLICY_V2 && prior.policy !== POLICY_V2) {
+        return stop('Checkpoint policy mismatch; reconciliation required');
+      }
+      const budgetValidation = validateBudgetState(prior.budget);
+      if (!budgetValidation.valid && !budgetValidation.ok) {
+        return stop('Checkpoint budget tamper detected: ' + budgetValidation.reason);
+      }
+      if (prior.budget.policy && prior.budget.policy !== taskPolicy) {
+        return stop('Checkpoint budget policy mismatch; reconciliation required');
+      }
+      if (taskPolicy === POLICY_V2) {
+        if (prior.budget.repair_count > 4) {
+          return stop('Checkpoint repair count exceeds V2 limit of 4; reconciliation required');
+        }
+        if ((prior.budget.senior_count ?? 0) > 2) {
+          return stop('Checkpoint senior count exceeds V2 limit of 2; reconciliation required');
+        }
+        if (prior.budget.fallback_occurred && (!prior.budget.fallback_handoff || prior.budget.active_worker !== 'luna')) {
+          return stop('Checkpoint fallback handoff inconsistency; reconciliation required');
+        }
+        if (prior.phase === 'FALLBACK_WAIT' || prior.phase === 'FALLBACK_HANDOFF') {
+          if (!prior.budget.fallback_occurred || prior.budget.active_worker !== 'luna') {
+            return stop(`Checkpoint phase '${prior.phase}' requires fallback_occurred true and active_worker luna; reconciliation required`);
+          }
+        }
+        if (prior.fallback_handoff && JSON.stringify(prior.fallback_handoff) !== JSON.stringify(prior.budget.fallback_handoff)) {
+          return stop('Checkpoint state fallback_handoff conflicts with budget; reconciliation required');
+        }
+        if (prior.handoff_history && JSON.stringify(prior.handoff_history) !== JSON.stringify(prior.budget.handoff_history)) {
+          return stop('Checkpoint state handoff_history conflicts with budget; reconciliation required');
+        }
+        if (prior.failed_invocations && JSON.stringify(prior.failed_invocations) !== JSON.stringify(prior.budget.failed_invocations)) {
+          return stop('Checkpoint state failed_invocations conflicts with budget; reconciliation required');
+        }
+        const diskHandoffPath = path.join(packetDir, 'fallback_handoff.json');
+        if (existsSync(diskHandoffPath)) {
+          try {
+            const diskHandoff = await readJson(diskHandoffPath);
+            if (JSON.stringify(diskHandoff) !== JSON.stringify(prior.budget.fallback_handoff)) {
+              return stop('fallback_handoff.json on disk conflicts with checkpoint budget; reconciliation required');
+            }
+          } catch {
+            return stop('Invalid fallback_handoff.json on disk; reconciliation required');
+          }
+        }
+        const diskFailedPath = path.join(packetDir, 'failed_invocations.json');
+        if (existsSync(diskFailedPath)) {
+          try {
+            const diskFailed = await readJson(diskFailedPath);
+            if (JSON.stringify(diskFailed) !== JSON.stringify(prior.budget.failed_invocations)) {
+              return stop('failed_invocations.json on disk conflicts with checkpoint budget; reconciliation required');
+            }
+          } catch {
+            return stop('Invalid failed_invocations.json on disk; reconciliation required');
+          }
+        }
+        for (const att of prior.budget.attempts ?? []) {
+          if (att.tier === 'worker') {
+            if (att.model === GEMINI_MODEL && att.effort != null) {
+              return stop('Checkpoint worker attempt tamper detected (Gemini effort not null)');
+            }
+            if (att.model === LUNA_MODEL && att.effort !== LUNA_EFFORT) {
+              return stop(`Checkpoint worker attempt tamper detected (Luna effort not ${LUNA_EFFORT})`);
+            }
+            if (att.model !== GEMINI_MODEL && att.model !== LUNA_MODEL) {
+              return stop(`Checkpoint worker attempt tamper detected (invalid model ${att.model})`);
+            }
+          } else if (att.tier === 'senior') {
+            if (att.model !== SOL_MODEL || att.effort !== SOL_EFFORT) {
+              return stop(`Checkpoint senior attempt tamper detected (expected ${SOL_MODEL} at ${SOL_EFFORT})`);
+            }
+          }
+        }
+      } else {
+        if (prior.budget.repair_count > 2) {
+          return stop('Checkpoint repair count exceeds V1 limit of 2; reconciliation required');
+        }
+        if ((prior.budget.escalation_count ?? 0) > 1) {
+          return stop('Checkpoint escalation count exceeds V1 limit of 1; reconciliation required');
+        }
+        for (const att of prior.budget.attempts ?? []) {
+          if (att.tier === 'worker') {
+            if (att.model !== GEMINI_MODEL || att.effort != null) {
+              return stop('Checkpoint worker attempt tamper detected');
+            }
+          } else if (att.tier === 'senior') {
+            if (att.model !== ASTRA_MODEL || att.effort !== ASTRA_EFFORT) {
+              return stop('Checkpoint senior attempt tamper detected');
+            }
+          }
+        }
+      }
       if (!resume) {
         return stop('Prior checkpoint requires reconciliation; replay is unsupported');
       }
@@ -1022,13 +1295,13 @@ export async function runControlledBridge({
           evidence,
           review, config, { packetDir });
       }
-      if (prior.phase !== 'REPAIR' && prior.phase !== 'REVIEW_WAIT' && prior.phase !== 'PRODUCT_CHECK_WAIT') {
+      if (prior.phase !== 'REPAIR' && prior.phase !== 'REVIEW_WAIT' && prior.phase !== 'PRODUCT_CHECK_WAIT' && prior.phase !== 'FALLBACK_WAIT' && prior.phase !== 'FALLBACK_HANDOFF') {
         return stop(`Prior checkpoint phase '${prior.phase}' requires reconciliation`);
       }
     }
 
     if (prior === undefined && resume) {
-      const emptyBudget = createBudget(BUDGET_ORIGINS.GEMINI_INITIAL);
+      const emptyBudget = createBudget(BUDGET_ORIGINS.GEMINI_INITIAL, taskPolicy);
       const emptyState = { ...binding, budget: emptyBudget, phase: 'RECONCILE_REQUIRED', in_flight: false };
       await atomicJson(statePath, emptyState);
       return stop('Missing checkpoint; no initial worker launched; reconciliation required');
@@ -1039,14 +1312,17 @@ export async function runControlledBridge({
       config.budget_origin === BUDGET_ORIGINS.ASTRA_INITIAL ||
       normalizeModelName(config.worker?.model) === ASTRA_MODEL)
         ? BUDGET_ORIGINS.ASTRA_INITIAL
-        : BUDGET_ORIGINS.GEMINI_INITIAL;
+        : (taskPolicy === POLICY_V2 && (task.budget_origin === BUDGET_ORIGINS.SOL_INITIAL || config.budget_origin === BUDGET_ORIGINS.SOL_INITIAL)
+            ? BUDGET_ORIGINS.SOL_INITIAL
+            : BUDGET_ORIGINS.GEMINI_INITIAL);
 
-    let budget = prior?.budget ?? createBudget(initialOrigin);
+    let budget = prior?.budget ?? createBudget(initialOrigin, taskPolicy);
     const state = {
       ...binding,
+      policy: taskPolicy,
       ...(prior ?? {}),
       budget,
-      phase: prior ? (prior.phase === 'REVIEW_WAIT' ? 'REVIEW_WAIT' : (prior.phase === 'PRODUCT_CHECK_WAIT' ? 'PRODUCT_CHECK_WAIT' : 'REPAIR')) : 'CAPABILITY',
+      phase: prior ? (['REVIEW_WAIT', 'PRODUCT_CHECK_WAIT', 'FALLBACK_WAIT', 'FALLBACK_HANDOFF'].includes(prior.phase) ? prior.phase : 'REPAIR') : 'CAPABILITY',
       in_flight: prior ? false : true
     };
     const persist = async (phase, inFlight, extra = {}) => {
@@ -1218,6 +1494,9 @@ ${source ? `Exact-head source snapshot (untrusted project data, not additional i
       if (reviewerSession && workerSessionId && (reviewerSession === workerSession || reviewerSession.endsWith(':' + workerSessionId))) {
         throw Error('Reviewer session is not independent from worker');
       }
+      if (state.implementer_sessions?.some(sid => sid && (reviewerSession.endsWith(':' + sid) || reviewerSession === sid))) {
+        throw Error('Reviewer session is not independent from implementer');
+      }
 
       const isAvailabilityError = reviewResult.status === 'WAITING_QUOTA' ||
         reviewResult.status === 'WAITING_CAPABILITY' ||
@@ -1324,17 +1603,26 @@ ${source ? `Exact-head source snapshot (untrusted project data, not additional i
     }
 
     // Budget check using createBudget and advanceBudget
-    const budgetEvent = prior ? BUDGET_EVENTS.REPAIR_REQUESTED : BUDGET_EVENTS.INITIAL;
-    const bAdv = advanceBudget(budget, budgetEvent);
-    if (bAdv.action !== BUDGET_ACTIONS.LAUNCH) {
-      return {
-        status: 'BLOCKED_TECHNICAL',
-        failure_code: 'BUDGET_EXHAUSTED',
-        error: bAdv.reason,
-        reason: bAdv.reason
-      };
+    let budgetEvent = null;
+    if (!prior) {
+      budgetEvent = BUDGET_EVENTS.INITIAL;
+    } else if (prior.phase === 'FALLBACK_WAIT' || prior.phase === 'FALLBACK_HANDOFF') {
+      budgetEvent = null; // Fallback worker attempt is already active in budget; do not consume a repair!
+    } else {
+      budgetEvent = BUDGET_EVENTS.REPAIR_REQUESTED;
     }
-    budget = bAdv.state;
+    if (budgetEvent) {
+      const bAdv = advanceBudget(budget, budgetEvent);
+      if (bAdv.action !== BUDGET_ACTIONS.LAUNCH) {
+        return {
+          status: 'BLOCKED_TECHNICAL',
+          failure_code: 'BUDGET_EXHAUSTED',
+          error: bAdv.reason,
+          reason: bAdv.reason
+        };
+      }
+      budget = bAdv.state;
+    }
     await persist('PRE_WORKER', false);
 
     if (prior && prior.phase === 'REPAIR') {
@@ -1345,8 +1633,20 @@ ${source ? `Exact-head source snapshot (untrusted project data, not additional i
 
     const currentAttempt = budget.attempts[budget.attempts.length - 1];
     const isSenior = currentAttempt?.tier === 'senior';
-    const implementerConfig = isSenior ? config.senior : config.worker;
-    const designatedModel = isSenior ? ASTRA_MODEL : GEMINI_MODEL;
+    const isLunaWorker = budget.active_worker === 'luna';
+    const activeRole = isSenior ? 'senior' : 'worker';
+    let implementerConfig;
+    let designatedModel;
+    if (isSenior) {
+      implementerConfig = config.senior;
+      designatedModel = taskPolicy === POLICY_V2 ? SOL_MODEL : ASTRA_MODEL;
+    } else if (isLunaWorker) {
+      implementerConfig = config.fallback_worker;
+      designatedModel = LUNA_MODEL;
+    } else {
+      implementerConfig = config.worker;
+      designatedModel = GEMINI_MODEL;
+    }
     if (!implementerConfig) {
       return {
         status: 'BLOCKED_TECHNICAL',
@@ -1356,15 +1656,44 @@ ${source ? `Exact-head source snapshot (untrusted project data, not additional i
       };
     }
 
-    const bridgeRunId = randomUUID();
-    const runDir = path.join(packetDir, bridgeRunId);
+    // Fresh JIT probe Luna immediately before invocation on resume from FALLBACK_WAIT or FALLBACK_HANDOFF
+    if (isLunaWorker && (prior?.phase === 'FALLBACK_WAIT' || prior?.phase === 'FALLBACK_HANDOFF')) {
+      const lunaReport = await doctor(config.fallback_worker, {
+        cwd,
+        packetDir: path.join(packetDir, 'capabilities', 'fallback_worker'),
+        probe: true,
+        signal
+      });
+      if (lunaReport.status !== 'PROBED') {
+        const pauseStatus = lunaReport.execution?.status === 'WAITING_QUOTA' ? 'WAITING_QUOTA' : 'WAITING_CAPABILITY';
+        await persist('FALLBACK_WAIT', false, {
+          head: headBefore,
+          status: pauseStatus,
+          active_worker: 'luna',
+          error: lunaReport.reason ?? 'Luna fallback worker unavailable',
+          failed_invocations: state.failed_invocations ?? budget.failed_invocations ?? [],
+          fallback_handoff: state.fallback_handoff ?? budget.fallback_handoff ?? null,
+          handoff_history: state.handoff_history ?? budget.handoff_history ?? [],
+          handoff_digest: state.handoff_digest ?? budget.handoff_digest ?? null
+        });
+        return {
+          status: pauseStatus,
+          reconciliation_required: false,
+          reason: lunaReport.reason ?? 'Luna fallback worker capability unavailable',
+          error: lunaReport.reason ?? 'Luna fallback worker capability unavailable'
+        };
+      }
+    }
+
+    let bridgeRunId = randomUUID();
+    let runDir = path.join(packetDir, bridgeRunId);
     await mkdir(runDir, { recursive: true });
 
     // Pre-worker manifest capture
-    const preManifest = captureManifest(cwd, headBefore, config.write_paths, {
+    let preManifest = captureManifest(cwd, headBefore, config.write_paths, {
       authorizedIgnored: config.authorized_ignored
     });
-    await persist('WORKER', true, { pre_manifest: preManifest, bridge_run_id: bridgeRunId, run_id: bridgeRunId });
+    await persist(isSenior ? 'SENIOR' : 'WORKER', true, { role: activeRole, pre_manifest: preManifest, bridge_run_id: bridgeRunId, run_id: bridgeRunId });
 
     const feedback = prior?.feedback ?? prior?.evidence ?? prior?.review ?? null;
     const workerPrompt = `You are the IMPLEMENTER for a bounded local task.
@@ -1382,8 +1711,10 @@ Return only JSON matching: {"verdict":"PASS or NEEDS_FIX or BLOCKED","summary":"
     };
     const inputPacketHash = sha256Hex(JSON.stringify(inputPacket));
 
-    const preInvocationRecord = {
+    let preInvocationRecord = {
       schema_version: 'qq.workflow.invocation.v1',
+      policy: taskPolicy,
+      role: activeRole,
       bridge_run_id: bridgeRunId,
       task_id: task.task_id,
       revision: task.revision,
@@ -1399,12 +1730,12 @@ Return only JSON matching: {"verdict":"PASS or NEEDS_FIX or BLOCKED","summary":"
     };
     await atomicJson(path.join(runDir, 'pre-invocation.json'), preInvocationRecord);
 
-    // Invoke implementer (Gemini worker or Astra senior)
-    const workerResult = await invoke(implementerConfig, {
+    // Invoke implementer (Gemini worker, Luna worker, or Senior)
+    let workerResult = await invoke(implementerConfig, {
       cwd,
       packetDir: runDir,
       receiptRoot: runDir,
-      role: 'worker',
+      role: activeRole,
       receiptKind: isSenior ? 'SENIOR' : (prior ? 'REPAIR' : 'WORK'),
       prompt: workerPrompt,
       timeoutSeconds: config.timeout_seconds,
@@ -1412,21 +1743,224 @@ Return only JSON matching: {"verdict":"PASS or NEEDS_FIX or BLOCKED","summary":"
     });
 
     if (workerResult.status || workerResult.code !== 0) {
-      budget = advanceBudget(budget, BUDGET_EVENTS.INTERRUPTED).state;
-      await persist('RECONCILE_REQUIRED', true);
-      const failedInvocation = {
-        ...preInvocationRecord,
-        finished_at: workerResult.finished_at ?? new Date().toISOString(),
-        termination_status: workerResult.status ?? 'INTERRUPTED',
-        output_hash: sha256Hex(typeof workerResult.stdout === 'string' ? workerResult.stdout : (workerResult.reason ?? 'INTERRUPTED'))
-      };
-      await atomicJson(path.join(packetDir, 'invocation.json'), failedInvocation);
-      return {
-        status: workerResult.status ?? 'WAITING_QUOTA',
-        reconciliation_required: true,
-        reason: workerResult.reason,
-        error: workerResult.reason
-      };
+      const canFallbackToLuna = taskPolicy === POLICY_V2 &&
+        designatedModel === GEMINI_MODEL &&
+        !isSenior &&
+        config.fallback_worker &&
+        isEligibleWorkerFallback(workerResult);
+
+      if (canFallbackToLuna) {
+        cleanHead(cwd, headBefore);
+        const failedInvocation = {
+          ...preInvocationRecord,
+          policy: taskPolicy,
+          finished_at: workerResult.finished_at ?? new Date().toISOString(),
+          termination_status: workerResult.status ?? 'INTERRUPTED',
+          reason: workerResult.reason ?? `Gemini execution failure (exit code ${workerResult.code})`,
+          output_hash: sha256Hex(typeof workerResult.stdout === 'string' ? workerResult.stdout : (workerResult.reason ?? 'INTERRUPTED'))
+        };
+        state.failed_invocations = state.failed_invocations ?? [];
+        state.failed_invocations.push(failedInvocation);
+        await atomicJson(path.join(packetDir, 'failed_invocations.json'), state.failed_invocations);
+        await atomicJson(path.join(packetDir, 'invocation.json'), failedInvocation);
+
+        const fallbackAdv = advanceBudget(budget, {
+          type: BUDGET_EVENTS.FALLBACK_TRIGGERED,
+          reason: workerResult.reason ?? `Gemini execution failure (exit code ${workerResult.code})`,
+          failed_invocation: failedInvocation,
+          handoff: {
+            from_worker: GEMINI_MODEL,
+            to_worker: LUNA_MODEL,
+            reason: workerResult.reason ?? `Gemini execution failure (exit code ${workerResult.code})`,
+            timestamp: new Date().toISOString(),
+            failed_invocation_id: bridgeRunId
+          }
+        });
+        if (fallbackAdv.action === BUDGET_ACTIONS.BLOCKED) {
+          return {
+            status: 'BLOCKED_TECHNICAL',
+            failure_code: 'BUDGET_EXHAUSTED',
+            error: fallbackAdv.reason,
+            reason: fallbackAdv.reason
+          };
+        }
+        budget = fallbackAdv.state;
+        const handoffRecord = budget.fallback_handoff;
+        state.fallback_handoff = handoffRecord;
+        state.handoff_history = budget.handoff_history;
+        state.failed_invocations = budget.failed_invocations;
+        state.handoff_digest = budget.handoff_digest;
+        await atomicJson(path.join(packetDir, 'fallback_handoff.json'), handoffRecord);
+        await atomicJson(path.join(packetDir, 'failed_invocations.json'), budget.failed_invocations);
+
+        await persist('FALLBACK_HANDOFF', false, {
+          head: headBefore,
+          active_worker: 'luna',
+          fallback_handoff: handoffRecord,
+          handoff_history: budget.handoff_history,
+          failed_invocations: budget.failed_invocations,
+          handoff_digest: budget.handoff_digest
+        });
+
+        const lunaReport = await doctor(config.fallback_worker, {
+          cwd,
+          packetDir: path.join(packetDir, 'capabilities', 'fallback_worker'),
+          probe: true,
+          signal
+        });
+        if (lunaReport.status !== 'PROBED') {
+          const pauseStatus = lunaReport.execution?.status === 'WAITING_QUOTA' ? 'WAITING_QUOTA' : 'WAITING_CAPABILITY';
+          await persist('FALLBACK_WAIT', false, {
+            head: headBefore,
+            status: pauseStatus,
+            active_worker: 'luna',
+            error: lunaReport.reason ?? 'Luna fallback worker unavailable',
+            failed_invocations: budget.failed_invocations,
+            fallback_handoff: handoffRecord,
+            handoff_history: budget.handoff_history,
+            handoff_digest: budget.handoff_digest
+          });
+          return {
+            status: pauseStatus,
+            reconciliation_required: false,
+            reason: lunaReport.reason ?? 'Luna fallback worker capability unavailable',
+            error: lunaReport.reason ?? 'Luna fallback worker capability unavailable'
+          };
+        }
+
+        implementerConfig = config.fallback_worker;
+        designatedModel = LUNA_MODEL;
+
+        bridgeRunId = randomUUID();
+        runDir = path.join(packetDir, bridgeRunId);
+        await mkdir(runDir, { recursive: true });
+
+        preManifest = captureManifest(cwd, headBefore, config.write_paths, {
+          authorizedIgnored: config.authorized_ignored
+        });
+        await persist('WORKER', true, {
+          pre_manifest: preManifest,
+          bridge_run_id: bridgeRunId,
+          run_id: bridgeRunId,
+          active_worker: 'luna',
+          fallback_handoff: handoffRecord,
+          handoff_history: budget.handoff_history,
+          failed_invocations: budget.failed_invocations,
+          handoff_digest: budget.handoff_digest
+        });
+
+        preInvocationRecord = {
+          schema_version: 'qq.workflow.invocation.v1',
+          policy: taskPolicy,
+          role: 'worker',
+          bridge_run_id: bridgeRunId,
+          task_id: task.task_id,
+          revision: task.revision,
+          contract_sha256: lock.contract_sha256,
+          config_sha256: controlledConfigHash(config),
+          bridge_source_sha256: await bridgeSourceHash(),
+          designated_implementer: designatedModel,
+          provider: implementerConfig.provider,
+          requested_model: implementerConfig.model,
+          requested_effort: LUNA_EFFORT,
+          input_packet_hash: inputPacketHash,
+          started_at: new Date().toISOString()
+        };
+        await atomicJson(path.join(runDir, 'pre-invocation.json'), preInvocationRecord);
+
+        workerResult = await invoke(implementerConfig, {
+          cwd,
+          packetDir: runDir,
+          receiptRoot: runDir,
+          role: 'worker',
+          receiptKind: prior ? 'REPAIR' : 'WORK',
+          prompt: workerPrompt,
+          timeoutSeconds: config.timeout_seconds,
+          signal
+        });
+
+        if (workerResult.status || workerResult.code !== 0) {
+          const failedLuna = {
+            ...preInvocationRecord,
+            policy: taskPolicy,
+            finished_at: workerResult.finished_at ?? new Date().toISOString(),
+            termination_status: workerResult.status ?? 'INTERRUPTED',
+            reason: workerResult.reason ?? `Luna execution failure (exit code ${workerResult.code})`,
+            output_hash: sha256Hex(typeof workerResult.stdout === 'string' ? workerResult.stdout : (workerResult.reason ?? 'INTERRUPTED'))
+          };
+          budget = Object.freeze({
+            ...budget,
+            failed_invocations: Object.freeze([...(budget.failed_invocations ?? []), failedLuna])
+          });
+          state.failed_invocations = budget.failed_invocations;
+          await atomicJson(path.join(packetDir, 'failed_invocations.json'), budget.failed_invocations);
+          await atomicJson(path.join(packetDir, 'invocation.json'), failedLuna);
+
+          // A classified provider failure with a clean workspace is safe to pause
+          // and retry through the already-reserved Luna attempt.  Do not consume a
+          // repair round or route to a different provider.  Unknown failures and
+          // any dirty workspace still require explicit reconciliation.
+          const safeToPause = isEligibleWorkerFallback(workerResult) ||
+            workerResult.reason === 'AUTHENTICATION_REQUIRED';
+          if (safeToPause) {
+            try {
+              cleanHead(cwd, headBefore);
+              const pauseStatus = workerResult.status === 'WAITING_QUOTA' ||
+                workerResult.reason === 'RESOURCE_EXHAUSTED'
+                ? 'WAITING_QUOTA'
+                : 'WAITING_CAPABILITY';
+              await persist('FALLBACK_WAIT', false, {
+                head: headBefore,
+                status: pauseStatus,
+                active_worker: 'luna',
+                error: failedLuna.reason,
+                failed_invocations: budget.failed_invocations,
+                fallback_handoff: budget.fallback_handoff,
+                handoff_history: budget.handoff_history,
+                handoff_digest: budget.handoff_digest
+              });
+              return {
+                status: pauseStatus,
+                reconciliation_required: false,
+                reason: failedLuna.reason,
+                error: failedLuna.reason
+              };
+            } catch {
+              // Fall through to fail-closed reconciliation below.
+            }
+          }
+          budget = advanceBudget(budget, BUDGET_EVENTS.INTERRUPTED).state;
+          await persist('RECONCILE_REQUIRED', true);
+          return {
+            status: workerResult.status ?? 'BLOCKED_TECHNICAL',
+            reconciliation_required: true,
+            reason: failedLuna.reason,
+            error: failedLuna.reason
+          };
+        }
+      } else {
+        budget = advanceBudget(budget, BUDGET_EVENTS.INTERRUPTED).state;
+        await persist('RECONCILE_REQUIRED', true);
+        const failedInvocation = {
+          ...preInvocationRecord,
+          policy: taskPolicy,
+          finished_at: workerResult.finished_at ?? new Date().toISOString(),
+          termination_status: workerResult.status ?? 'INTERRUPTED',
+          output_hash: sha256Hex(typeof workerResult.stdout === 'string' ? workerResult.stdout : (workerResult.reason ?? 'INTERRUPTED'))
+        };
+        await atomicJson(path.join(packetDir, 'invocation.json'), failedInvocation);
+        return {
+          status: workerResult.status ?? 'WAITING_QUOTA',
+          reconciliation_required: true,
+          reason: workerResult.reason,
+          error: workerResult.reason
+        };
+      }
+    }
+
+    if (workerResult.session_id) {
+      state.implementer_sessions = state.implementer_sessions ?? [];
+      state.implementer_sessions.push(workerResult.session_id);
     }
 
     const rawOutput = typeof workerResult.stdout === 'string'
@@ -1478,6 +2012,8 @@ Return only JSON matching: {"verdict":"PASS or NEEDS_FIX or BLOCKED","summary":"
 
     const invocationRecord = {
       schema_version: 'qq.workflow.invocation.v1',
+      policy: taskPolicy,
+      role: activeRole,
       bridge_run_id: bridgeRunId,
       task_id: task.task_id,
       revision: task.revision,
@@ -1510,16 +2046,45 @@ Return only JSON matching: {"verdict":"PASS or NEEDS_FIX or BLOCKED","summary":"
       output_hash: outputHash
     };
 
-    const reported = workerResult.reported ?? (workerResult.session_id ? {
-      session_id: workerResult.session_id,
-      actual_model: workerResult.actual_model ?? null,
-      actual_effort: workerResult.actual_effort ?? null,
-      run_id: null,
-      usage: workerResult.usage ?? null,
-      provider_status: workerResult.provider_status ?? null
-    } : null);
+    const rawObserved = Array.isArray(workerResult.observed_models)
+      ? workerResult.observed_models
+      : (Array.isArray(workerResult.reported?.observed_models)
+        ? workerResult.reported.observed_models
+        : (workerResult.actual_model ? [workerResult.actual_model] : (workerResult.reported?.actual_model ? [workerResult.reported.actual_model] : [])));
+    const validObserved = rawObserved.filter(m => typeof m === 'string' && m.trim());
+    const normUnique = [...new Set(validObserved.map(normalizeModelName).filter(Boolean))];
+
+    if (normUnique.length > 1) {
+      await persist('RECONCILE_REQUIRED', true);
+      return {
+        status: 'BLOCKED_TECHNICAL',
+        failure_code: 'EXECUTION_MISMATCH',
+        reconciliation_required: true,
+        error: `Multiple conflicting observed models reported: ${validObserved.join(', ')}`,
+        reason: `Multiple conflicting observed models reported: ${validObserved.join(', ')}`
+      };
+    }
+
+    const actualModel = normUnique.length === 1 ? validObserved[0] : null;
+
+    const reported = workerResult.reported
+      ? {
+          ...workerResult.reported,
+          actual_model: workerResult.reported.actual_model ?? actualModel,
+          ...(validObserved.length > 0 ? { observed_models: validObserved } : {})
+        }
+      : (workerResult.session_id || actualModel || workerResult.usage ? {
+          session_id: workerResult.session_id ?? null,
+          actual_model: actualModel,
+          ...(validObserved.length > 0 ? { observed_models: validObserved } : {}),
+          actual_effort: workerResult.actual_effort ?? null,
+          run_id: null,
+          usage: workerResult.usage ?? null,
+          provider_status: workerResult.provider_status ?? null
+        } : null);
 
     const bindings = {
+      policy: taskPolicy,
       bridge_run_id: bridgeRunId,
       task_id: task.task_id,
       revision: task.revision,
@@ -1527,6 +2092,7 @@ Return only JSON matching: {"verdict":"PASS or NEEDS_FIX or BLOCKED","summary":"
       config_sha256: controlledConfigHash(config),
       bridge_source_sha256: await bridgeSourceHash(),
       designated_implementer: designatedModel,
+      role: activeRole,
       base_sha: task.base_sha,
       head_before: headBefore,
       invocation_receipt_reference: rawInvocationReference,
@@ -1535,7 +2101,19 @@ Return only JSON matching: {"verdict":"PASS or NEEDS_FIX or BLOCKED","summary":"
         : {})
     };
 
-    const receipt = buildReceipt(observed, reported, bindings, manifest);
+    let receipt;
+    try {
+      receipt = buildReceipt(observed, reported, bindings, manifest);
+    } catch (err) {
+      await persist('RECONCILE_REQUIRED', true);
+      return {
+        status: 'BLOCKED_TECHNICAL',
+        failure_code: 'EXECUTION_MISMATCH',
+        reconciliation_required: true,
+        error: err.message,
+        reason: err.message
+      };
+    }
 
     // Check for active git hooks before staging or committing
     const activeHooks = getActiveHooks(cwd);
@@ -1719,9 +2297,10 @@ Return only JSON matching: {"verdict":"PASS or NEEDS_FIX or BLOCKED","summary":"
 
 export function controlledReadiness(task, receipt, evidence, review, config, options = {}) {
   const wait = reason => ({ status: 'NEEDS_FIX', reason });
+  const taskPolicy = task?.execution?.policy ?? task?.policy ?? receipt?.policy ?? CONTROLLED_POLICY;
   try {
     validateControlledTask(task);
-    validateControlledConfig(config);
+    validateControlledConfig(config, taskPolicy);
     assertWorkerScope(task, config, process.cwd());
   } catch (err) {
     return wait(err.message);
@@ -1729,10 +2308,35 @@ export function controlledReadiness(task, receipt, evidence, review, config, opt
   if (!/^[0-9a-f]{40}$/i.test(task.candidate_head ?? '') ||
       !/^[0-9a-f]{64}$/i.test(task.contract_sha256 ?? '')) return wait('valid candidate and contract required');
   if (!receipt || receipt.schema_version !== RECEIPT_SCHEMA) return wait('valid execution receipt required');
-  if (receipt.policy !== CONTROLLED_POLICY) return wait('controlled execution policy receipt required');
+  if (!CONTROLLED_POLICIES.includes(receipt.policy)) return wait('controlled execution policy receipt required');
+  if (taskPolicy && receipt.policy !== taskPolicy) return wait('receipt policy does not match task policy');
   const normImplementer = normalizeModelName(receipt.designated_implementer);
-  if (normImplementer !== GEMINI_MODEL && normImplementer !== ASTRA_MODEL) {
-    return wait('designated implementer must be Gemini Flash High or Astra');
+  if (receipt.policy === POLICY_V2) {
+    if (normImplementer !== GEMINI_MODEL && normImplementer !== LUNA_MODEL && normImplementer !== SOL_MODEL) {
+      return wait('designated implementer must be Gemini Flash High, Luna Max, or Sol Medium');
+    }
+  } else {
+    if (normImplementer !== GEMINI_MODEL && normImplementer !== ASTRA_MODEL) {
+      return wait('designated implementer must be Gemini Flash High or Astra');
+    }
+  }
+  if (receipt.reported_by_provider?.actual_model != null) {
+    const normActual = normalizeModelName(receipt.reported_by_provider.actual_model);
+    const normReq = normalizeModelName(receipt.observed_by_bridge?.requested_model ?? receipt.designated_implementer);
+    if (normActual !== normReq) {
+      return wait(`reported actual_model (${receipt.reported_by_provider.actual_model}) does not match requested_model (${receipt.observed_by_bridge?.requested_model ?? receipt.designated_implementer})`);
+    }
+  }
+  if (Array.isArray(receipt.reported_by_provider?.observed_models) && receipt.reported_by_provider.observed_models.length > 0) {
+    const normReq = normalizeModelName(receipt.observed_by_bridge?.requested_model ?? receipt.designated_implementer);
+    const validObs = receipt.reported_by_provider.observed_models.filter(m => typeof m === 'string' && m.trim());
+    const uniqueObs = [...new Set(validObs.map(normalizeModelName).filter(Boolean))];
+    if (uniqueObs.length > 1) {
+      return wait(`reported observed_models contains multiple conflicting models: ${validObs.join(', ')}`);
+    }
+    if (uniqueObs.length === 1 && uniqueObs[0] !== normReq) {
+      return wait(`reported observed_models (${validObs.join(', ')}) does not match requested_model (${receipt.observed_by_bridge?.requested_model ?? receipt.designated_implementer})`);
+    }
   }
   if (receipt.candidate?.head !== task.candidate_head) return wait('receipt candidate head mismatch');
   if (!/^[0-9a-f]{40}$/i.test(receipt.candidate?.tree ?? '') ||
@@ -1956,7 +2560,7 @@ export async function validateControlledAcceptedPilot(config, pilotDir, { requir
   }
   const receipt = await readJson(receiptPath);
   if (receipt.schema_version !== RECEIPT_SCHEMA) throw Error('valid execution receipt required');
-  if (receipt.policy !== CONTROLLED_POLICY) throw Error('controlled execution policy receipt required');
+  if (!CONTROLLED_POLICIES.includes(receipt.policy)) throw Error('controlled execution policy receipt required');
   if (receipt.task_id !== t.task_id || receipt.revision !== t.revision) throw Error('receipt task mismatch');
   if (receipt.contract_sha256 !== t.contract_sha256) throw Error('receipt contract mismatch');
   if (receipt.config_sha256 !== currentConfigHash) throw Error('receipt config mismatch');
@@ -1974,16 +2578,37 @@ export async function validateControlledAcceptedPilot(config, pilotDir, { requir
     throw Error('failed to verify candidate git tree: ' + err.message);
   }
 
-  // Real Google worker check:
-  if (receipt.observed_by_bridge?.provider !== 'google') {
-    throw Error('real Google worker required');
-  }
+  // The configured primary worker is always Google.  A completed V2 pilot may
+  // legitimately finish on the recorded Luna fallback or Sol senior worker.
   if (config.worker?.provider !== 'google') {
     throw Error('config worker provider must be google');
   }
   const normWorkerModel = normalizeModelName(receipt.designated_implementer);
-  if (normWorkerModel !== GEMINI_MODEL && normWorkerModel !== ASTRA_MODEL) {
-    throw Error('designated implementer must be Gemini Flash High or Astra');
+  if (receipt.policy === POLICY_V2) {
+    if (normWorkerModel !== GEMINI_MODEL && normWorkerModel !== LUNA_MODEL && normWorkerModel !== SOL_MODEL) {
+      throw Error('designated implementer must be Gemini Flash High, Luna Max, or Sol Medium');
+    }
+    const budgetCheck = validateBudgetState(s.budget);
+    if (!budgetCheck.ok) {
+      throw Error('valid V2 pilot budget required: ' + budgetCheck.reason);
+    }
+    const expectedProvider = normWorkerModel === GEMINI_MODEL ? 'google' : 'openai';
+    if (receipt.observed_by_bridge?.provider !== expectedProvider) {
+      throw Error(`V2 ${normWorkerModel} receipt requires observed provider ${expectedProvider}`);
+    }
+    if (normWorkerModel === LUNA_MODEL && !s.budget.fallback_occurred) {
+      throw Error('Luna pilot receipt requires recorded Gemini-to-Luna fallback');
+    }
+    if (normWorkerModel === GEMINI_MODEL && s.budget.fallback_occurred) {
+      throw Error('Gemini pilot receipt is stale after a recorded Luna fallback');
+    }
+  } else {
+    if (receipt.observed_by_bridge?.provider !== 'google') {
+      throw Error('real Google worker required');
+    }
+    if (normWorkerModel !== GEMINI_MODEL && normWorkerModel !== ASTRA_MODEL) {
+      throw Error('designated implementer must be Gemini Flash High or Astra');
+    }
   }
 
   // Evidence
@@ -2191,7 +2816,7 @@ export async function controlledQuotaDrill(config, pilotDir, outputDir) {
   const receipt = {
     schema_version: 'qq.bridge.controlled-quota-drill.v1',
     status: 'QUOTA_DRILL_PASS',
-    policy: CONTROLLED_POLICY,
+    policy: pilot.receipt.policy ?? pilot.t.policy ?? CONTROLLED_POLICY,
     platform: 'win32',
     pilot_dir: pilot.pilotDir,
     pilot_digest: pilot.pilot_digest,
@@ -2244,7 +2869,7 @@ export async function checkedControlledQuotaDrill(pilot, outputDir) {
   if (!validSchemas.includes(drill?.schema_version) || drill.status !== 'QUOTA_DRILL_PASS') {
     throw Error('invalid quota drill receipt');
   }
-  if (drill.policy && drill.policy !== CONTROLLED_POLICY) {
+  if (drill.policy && !CONTROLLED_POLICIES.includes(drill.policy)) {
     throw Error('quota drill policy mismatch');
   }
   if (drill.platform !== 'win32') {
@@ -2298,7 +2923,7 @@ export async function controlledActivate(config, pilotDir, outputDir) {
   const receipt = {
     schema_version: 'qq.bridge.controlled-activation.v1',
     status: 'ACCEPTED',
-    policy: CONTROLLED_POLICY,
+    policy: pilot.receipt.policy ?? pilot.t.policy ?? CONTROLLED_POLICY,
     platform: 'win32',
     pilot_dir: pilot.pilotDir,
     pilot_digest: pilot.pilot_digest,

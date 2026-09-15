@@ -46,17 +46,30 @@ export async function execute(argv,{cwd,env=subscriptionEnv(),input='',timeoutSe
   });
 }
 
-export function failureStatus(result) {
-  if(result.reason==='SPAWN_ERROR')return 'WAITING_CAPABILITY';
-  if(result.reason)return 'BLOCKED_TECHNICAL';
+// Classify a failed invocation without retaining its raw output.  The bridge only
+// persists this enum, so fallback decisions cannot be made from an arbitrary
+// nonzero process exit or from unredacted CLI text.
+export function failureReason(result) {
+  if(!result||typeof result!=='object')return null;
+  if(result.reason)return result.reason;
+  if(result.code===0||result.code===undefined||result.code===null)return null;
+
   // Only inspect failed process output: discussion of quota in a successful
   // review is not evidence that the provider exhausted its quota.
-  if(result.code!==0) {
-    const s=result.stdout+'\n'+result.stderr;
-    if(/quota|rate.?limit|usage limit|resource.exhausted|\b429\b/i.test(s))return 'WAITING_QUOTA';
-    if(/auth|log.?in|sign.?in|credential|\b401\b|\b403\b/i.test(s))return 'WAITING_CAPABILITY';
-    return 'BLOCKED_TECHNICAL';
-  }
-  return null;
+  const s=String(result.stdout??'')+'\n'+String(result.stderr??'');
+  if(/permission|authority|scope|contract|evidence/i.test(s))return 'PERMISSION_DENIED';
+  if(/\btest\b|assert(?:ion)?|\bjest\b|\bvitest\b|\bmocha\b|\btap\b/i.test(s))return 'TEST_FAILURE';
+  if(/quota|rate.?limit|usage limit|resource.exhausted|\b429\b/i.test(s))return 'RESOURCE_EXHAUSTED';
+  if(/auth|log.?in|sign.?in|credential|\b401\b|\b403\b/i.test(s))return 'AUTHENTICATION_REQUIRED';
+  if(/econnrefused|etimedout|enotfound|ehostunreach|enetunreach|epipe|network.*(?:error|fail)|connection.*(?:error|fail|reset)/i.test(s))return 'CONNECTION_FAILURE';
+  if(/\bcrash(?:ed)?\b|fatal (?:error|crash)|segmentation fault|access violation/i.test(s))return 'PROVIDER_CRASH';
+  return 'PROCESS_EXIT_NONZERO';
+}
+
+export function failureStatus(result) {
+  const reason=failureReason(result);
+  if(reason==='SPAWN_ERROR'||reason==='AUTHENTICATION_REQUIRED')return 'WAITING_CAPABILITY';
+  if(reason==='RESOURCE_EXHAUSTED')return 'WAITING_QUOTA';
+  return reason?'BLOCKED_TECHNICAL':null;
 }
 export const safe=value=>JSON.parse(redactText(JSON.stringify(value)));

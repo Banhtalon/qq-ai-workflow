@@ -23,8 +23,13 @@ import {
   separateOutput,
   CONTROLLED_TASK_SCHEMA,
   CONTROLLED_CONFIG_SCHEMA,
-  CONTROLLED_POLICY
+  CONTROLLED_POLICY,
+  CONTROLLED_POLICY_V1,
+  CONTROLLED_POLICY_V2,
+  CONTROLLED_POLICIES,
+  isEligibleWorkerFallback
 } from '../scripts/lib/controlled-bridge.mjs';
+import { buildReceipt, captureManifest } from '../scripts/lib/execution-receipt.mjs';
 
 import { runBridge, validateConfig, quotaDrill, activate } from '../scripts/lib/bridge.mjs';
 import { validateTask, freeze, readiness, readJson, writeJson, cleanHead } from '../scripts/lib/workflow.mjs';
@@ -3926,6 +3931,1334 @@ test('public quotaDrill and activate route controlled pilot packets to controlle
       pilot: false
     });
     assert.equal(runRes.status, 'READY_FOR_OWNER');
+  } finally {
+    await f.cleanup();
+  }
+});
+
+// =========================================================================
+// CONTROLLED_DELEGATION_V2 Bridge & Config Tests
+// =========================================================================
+
+test('validateControlledTask accepts CONTROLLED_POLICY_V1 and CONTROLLED_POLICY_V2, rejects others', () => {
+  const baseTask = {
+    schema_version: CONTROLLED_TASK_SCHEMA,
+    task_id: 'TASK-V2-001',
+    revision: 1,
+    base_sha: '0'.repeat(40),
+    goal: 'Test V2 Task Validation',
+    acceptance_criteria: ['Acceptance criteria met'],
+    gates: [{ id: 'test-gate', argv: ['node', '-e', 'process.exit(0)'], timeout_seconds: 5 }],
+    write_paths: ['feature.txt'],
+    allowed_paths: ['feature.txt'],
+    risk: 'LOW',
+    complexity: 'SIMPLE',
+    lane: 'NORMAL',
+    initial_lane: 'NORMAL',
+    initial_risk: 'LOW'
+  };
+
+  // V1 policy
+  const taskV1 = { ...baseTask, execution: { policy: CONTROLLED_POLICY_V1 } };
+  assert.equal(validateControlledTask(taskV1), taskV1);
+
+  // V2 policy
+  const taskV2 = { ...baseTask, execution: { policy: CONTROLLED_POLICY_V2 } };
+  assert.equal(validateControlledTask(taskV2), taskV2);
+
+  // Unsupported policy
+  const taskV3 = { ...baseTask, execution: { policy: 'CONTROLLED_DELEGATION_V3' } };
+  assert.throws(
+    () => validateControlledTask(taskV3),
+    /unsupported task policy/i
+  );
+});
+
+test('validateControlledConfig under V2 validates V2 role bindings and rejects invalid models/efforts', () => {
+  const validV2Config = {
+    schema_version: CONTROLLED_CONFIG_SCHEMA,
+    billing: 'SUBSCRIPTION_ONLY',
+    mode: 'ASSISTED',
+    timeout_seconds: 5,
+    write_paths: ['feature.txt'],
+    gate_paths: [],
+    worker: {
+      provider: 'google',
+      model: 'gemini-3.8-flash-high',
+      cli: 'gemini',
+      command: ['node', 'fake-cli.mjs']
+    },
+    fallback_worker: {
+      provider: 'openai',
+      model: 'gpt-5.6-luna',
+      effort: 'max',
+      command: ['node', 'fake-cli.mjs']
+    },
+    reviewer: {
+      provider: 'openai',
+      model: 'gpt-5.6-terra',
+      effort: 'xhigh',
+      command: ['node', 'fake-cli.mjs']
+    },
+    senior: {
+      provider: 'openai',
+      model: 'gpt-5.6-sol',
+      effort: 'medium',
+      command: ['node', 'fake-cli.mjs']
+    },
+    elevated_reviewer: {
+      provider: 'openai',
+      model: 'gpt-5.6-sol',
+      effort: 'medium',
+      command: ['node', 'fake-cli.mjs']
+    }
+  };
+
+  // Valid V2 config with V2 policy
+  assert.equal(validateControlledConfig(validV2Config, CONTROLLED_POLICY_V2), validV2Config);
+
+  // V2 config checked against V1 policy fails
+  assert.throws(
+    () => validateControlledConfig(validV2Config, CONTROLLED_POLICY_V1),
+    /fallback_worker/i
+  );
+
+  // Missing fallback_worker under V2
+  const missingFallback = { ...validV2Config };
+  delete missingFallback.fallback_worker;
+  assert.throws(
+    () => validateControlledConfig(missingFallback, CONTROLLED_POLICY_V2),
+    /fallback_worker/i
+  );
+
+  // Fallback worker with invalid model (e.g. gpt-4o)
+  const badFallbackModel = {
+    ...validV2Config,
+    fallback_worker: { ...validV2Config.fallback_worker, model: 'gpt-4o' }
+  };
+  assert.throws(
+    () => validateControlledConfig(badFallbackModel, CONTROLLED_POLICY_V2),
+    /fallback_worker.*gpt-5\.6-luna/i
+  );
+
+  // Fallback worker with invalid effort (e.g. 'high' instead of 'max')
+  const badFallbackEffort = {
+    ...validV2Config,
+    fallback_worker: { ...validV2Config.fallback_worker, effort: 'high' }
+  };
+  assert.throws(
+    () => validateControlledConfig(badFallbackEffort, CONTROLLED_POLICY_V2),
+    /effort.*max/i
+  );
+
+  // Reviewer with invalid effort (e.g. 'medium' instead of 'xhigh')
+  const badReviewerEffort = {
+    ...validV2Config,
+    reviewer: { ...validV2Config.reviewer, effort: 'medium' }
+  };
+  assert.throws(
+    () => validateControlledConfig(badReviewerEffort, CONTROLLED_POLICY_V2),
+    /reviewer/i
+  );
+
+  // Senior with invalid model (e.g. Astra under V2)
+  const badSeniorModel = {
+    ...validV2Config,
+    senior: { ...validV2Config.senior, model: 'gpt-6-astra', effort: 'low' }
+  };
+  assert.throws(
+    () => validateControlledConfig(badSeniorModel, CONTROLLED_POLICY_V2),
+    /senior/i
+  );
+
+  // Elevated reviewer with invalid model (e.g. Astra under V2)
+  const badElevatedModel = {
+    ...validV2Config,
+    elevated_reviewer: { ...validV2Config.elevated_reviewer, model: 'gpt-6-astra', effort: 'low' }
+  };
+  assert.throws(
+    () => validateControlledConfig(badElevatedModel, CONTROLLED_POLICY_V2),
+    /elevated[_ ]reviewer/i
+  );
+});
+
+test('controlledReadiness checks both V1 and V2 tasks against matching configs', () => {
+  const candidateHead = '1'.repeat(40);
+  const contractSha = '2'.repeat(64);
+  const baseTask = {
+    schema_version: CONTROLLED_TASK_SCHEMA,
+    task_id: 'TASK-V2-READY-001',
+    revision: 1,
+    base_sha: '0'.repeat(40),
+    goal: 'Test Readiness',
+    acceptance_criteria: ['Ready'],
+    gates: [{ id: 'gate', argv: ['node', '-e', 'process.exit(0)'], timeout_seconds: 5 }],
+    write_paths: ['feature.txt'],
+    allowed_paths: ['feature.txt'],
+    risk: 'LOW',
+    complexity: 'SIMPLE',
+    lane: 'NORMAL',
+    initial_lane: 'NORMAL',
+    initial_risk: 'LOW',
+    candidate_head: candidateHead,
+    contract_sha256: contractSha
+  };
+
+  const v1Config = {
+    schema_version: CONTROLLED_CONFIG_SCHEMA,
+    billing: 'SUBSCRIPTION_ONLY',
+    mode: 'ASSISTED',
+    timeout_seconds: 5,
+    write_paths: ['feature.txt'],
+    gate_paths: [],
+    worker: { provider: 'google', model: 'gemini-3.8-flash-high', cli: 'gemini', command: ['node', 'cli.js'] },
+    reviewer: { provider: 'openai', model: 'terra', effort: 'xhigh', command: ['node', 'cli.js'] },
+    senior: { provider: 'openai', model: 'gpt-6-astra', effort: 'low', command: ['node', 'cli.js'] },
+    elevated_reviewer: { provider: 'openai', model: 'gpt-6-astra', effort: 'low', command: ['node', 'cli.js'] }
+  };
+
+  const v2Config = {
+    schema_version: CONTROLLED_CONFIG_SCHEMA,
+    billing: 'SUBSCRIPTION_ONLY',
+    mode: 'ASSISTED',
+    timeout_seconds: 5,
+    write_paths: ['feature.txt'],
+    gate_paths: [],
+    worker: { provider: 'google', model: 'gemini-3.8-flash-high', cli: 'gemini', command: ['node', 'cli.js'] },
+    fallback_worker: { provider: 'openai', model: 'gpt-5.6-luna', effort: 'max', command: ['node', 'cli.js'] },
+    reviewer: { provider: 'openai', model: 'gpt-5.6-terra', effort: 'xhigh', command: ['node', 'cli.js'] },
+    senior: { provider: 'openai', model: 'gpt-5.6-sol', effort: 'medium', command: ['node', 'cli.js'] },
+    elevated_reviewer: { provider: 'openai', model: 'gpt-5.6-sol', effort: 'medium', command: ['node', 'cli.js'] }
+  };
+
+  const evidence = {
+    schema_version: 'qq.workflow.evidence.v10',
+    task_id: baseTask.task_id,
+    revision: baseTask.revision,
+    contract_sha256: contractSha,
+    status: 'PASS',
+    head: candidateHead,
+    gates: [{
+      id: 'gate',
+      argv: ['node', '-e', 'process.exit(0)'],
+      timeout_seconds: 5,
+      code: 0,
+      timed_out: false,
+      redaction_applied: false
+    }]
+  };
+
+  const review = {
+    schema_version: 'qq.workflow.review.v10',
+    task_id: baseTask.task_id,
+    revision: baseTask.revision,
+    contract_sha256: contractSha,
+    verdict: 'PASS',
+    head: candidateHead,
+    independent: true,
+    material_findings: [],
+    reviewer_session: 'session-review-test-001'
+  };
+
+  const v1Receipt = {
+    schema_version: 'qq.workflow.execution-receipt.v1',
+    policy: CONTROLLED_POLICY_V1,
+    task_id: baseTask.task_id,
+    revision: baseTask.revision,
+    contract_sha256: contractSha,
+    designated_implementer: 'gemini-3.8-flash-high',
+    candidate: {
+      head: candidateHead,
+      tree: '3'.repeat(40)
+    },
+    config_sha256: controlledConfigHash(v1Config)
+  };
+
+  const v2Receipt = {
+    schema_version: 'qq.workflow.execution-receipt.v1',
+    policy: CONTROLLED_POLICY_V2,
+    task_id: baseTask.task_id,
+    revision: baseTask.revision,
+    contract_sha256: contractSha,
+    designated_implementer: 'gemini-3.8-flash-high',
+    candidate: {
+      head: candidateHead,
+      tree: '3'.repeat(40)
+    },
+    config_sha256: controlledConfigHash(v2Config)
+  };
+
+  // V1 task with matching V1 receipt, evidence, review, config -> READY_FOR_OWNER
+  const taskV1 = { ...baseTask, execution: { policy: CONTROLLED_POLICY_V1 } };
+  const readyV1 = controlledReadiness(taskV1, v1Receipt, evidence, review, v1Config);
+  assert.equal(readyV1.status, 'READY_FOR_OWNER');
+
+  // V2 task with matching V2 receipt, evidence, review, config -> READY_FOR_OWNER
+  const taskV2 = { ...baseTask, execution: { policy: CONTROLLED_POLICY_V2 } };
+  const readyV2 = controlledReadiness(taskV2, v2Receipt, evidence, review, v2Config);
+  assert.equal(readyV2.status, 'READY_FOR_OWNER');
+
+  // Policy mismatches fail closed with NEEDS_FIX
+  const mismatch1 = controlledReadiness(taskV1, v2Receipt, evidence, review, v2Config);
+  assert.equal(mismatch1.status, 'NEEDS_FIX');
+
+  const mismatch2 = controlledReadiness(taskV2, v1Receipt, evidence, review, v1Config);
+  assert.equal(mismatch2.status, 'NEEDS_FIX');
+});
+
+async function createControlledV2Fixture(options = {}) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'qq-controlled-v2-test-'));
+  const repo = path.join(dir, 'repo');
+  execFileSync('git', ['init', '-b', 'main', repo], { stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.name', 'Controlled Test'], { cwd: repo, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'controlled@example.invalid'], { cwd: repo, stdio: 'ignore' });
+  execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: repo, stdio: 'ignore' });
+
+  await writeFile(path.join(repo, 'feature.txt'), 'base content\n');
+  execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' });
+  execFileSync('git', ['commit', '-m', 'base commit'], { cwd: repo, stdio: 'ignore' });
+  execFileSync('git', ['switch', '-c', 'feature'], { cwd: repo, stdio: 'ignore' });
+
+  const baseSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+
+  const fakeCli = path.join(dir, 'fake-v2-cli.mjs');
+  const logFile = path.join(dir, 'invocations.json');
+  const controlFile = path.join(dir, 'control.json');
+  await writeFile(controlFile, JSON.stringify({
+    geminiMode: options.geminiMode ?? 'pass',
+    lunaProbeFail: options.lunaProbeFail ?? false,
+    lunaWorkerMode: options.lunaWorkerMode ?? 'pass',
+    reviewerMode: options.reviewerMode ?? 'pass',
+    seniorMode: options.seniorMode ?? 'pass'
+  }, null, 2));
+
+  await writeFile(fakeCli, `
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+
+const args = process.argv.slice(2);
+const logFile = ${JSON.stringify(logFile)};
+const controlFile = ${JSON.stringify(controlFile)};
+
+function getControl() {
+  try { return JSON.parse(readFileSync(controlFile, 'utf8')); } catch { return {}; }
+}
+
+function recordInvocation(info) {
+  try {
+    let list = [];
+    try { list = JSON.parse(readFileSync(logFile, 'utf8')); } catch {}
+    list.push(info);
+    writeFileSync(logFile, JSON.stringify(list, null, 2));
+  } catch {}
+}
+
+if (args.includes('--version')) {
+  console.log('fake-v2-cli 1.0.0');
+  process.exit(0);
+}
+if (args.includes('login')) {
+  console.log('Logged in using ChatGPT');
+  process.exit(0);
+}
+
+let input = '';
+for await (const chunk of process.stdin) {
+  input += chunk;
+}
+
+const isGoogle = args.includes('--output-format') || args.includes('gemini-3.8-flash-high');
+const isProbe = input.includes('Capability probe') || args.includes('probe');
+const isWorker = args.includes('workspace-write') || args.includes('auto_edit') || args.includes('--mode');
+const isLuna = args.includes('gpt-5.6-luna');
+const isSol = args.includes('gpt-5.6-sol');
+const isTerra = args.includes('gpt-5.6-terra');
+const control = getControl();
+
+recordInvocation({
+  provider: isGoogle ? 'google' : 'openai',
+  model: isGoogle ? 'gemini-3.8-flash-high' : (isLuna ? 'gpt-5.6-luna' : (isSol ? 'gpt-5.6-sol' : 'gpt-5.6-terra')),
+  isWorker,
+  isProbe,
+  args
+});
+
+if (isGoogle) {
+  if (isProbe) {
+    const probeResult = {
+      verdict: 'PASS',
+      summary: 'subscription CLI probe',
+      material_findings: [],
+      risk_checks_completed: false
+    };
+    console.log(JSON.stringify({
+      session_id: 'session-gemini-probe-001',
+      response: JSON.stringify(probeResult),
+      stats: { models: { 'gemini-3.8-flash-high': 1 } }
+    }));
+    process.exit(0);
+  }
+
+  if (control.geminiMode === 'permission-denied') {
+    const permResult = {
+      verdict: 'BLOCKED',
+      summary: 'tool permission denied by security policy',
+      material_findings: ['permission denied'],
+      risk_checks_completed: false
+    };
+    console.log(JSON.stringify({
+      session_id: 'session-gemini-perm-001',
+      denied_actions: ['run_command'],
+      response: JSON.stringify(permResult),
+      stats: { models: { 'gemini-3.8-flash-high': 1 } }
+    }));
+    process.exit(0);
+  }
+
+  if (control.geminiMode === 'quota') {
+    console.error('RESOURCE_EXHAUSTED: 429 quota exhausted');
+    process.exit(1);
+  }
+
+  if (control.geminiMode === 'crash') {
+    console.error('Fatal crash in process');
+    process.exit(2);
+  }
+
+  if (control.geminiMode === 'generic-failure') {
+    console.error('worker command exited unsuccessfully');
+    process.exit(1);
+  }
+
+  // default pass
+  writeFileSync('feature.txt', 'controlled worker update\\n');
+  const result = {
+    verdict: 'PASS',
+    summary: 'gemini worker implementation complete',
+    material_findings: [],
+    risk_checks_completed: true
+  };
+  const geminiModels = control.geminiModels !== undefined ? control.geminiModels : { 'gemini-3.8-flash-high': 1 };
+  console.log(JSON.stringify({
+    session_id: 'session-gemini-worker-001',
+    response: JSON.stringify(result),
+    ...(geminiModels ? { stats: { models: geminiModels } } : {})
+  }));
+  process.exit(0);
+} else {
+  // OpenAI models: Luna fallback worker, Terra reviewer, Sol senior
+  if (isProbe) {
+    if (isLuna && control.lunaProbeFail) {
+      console.error('RESOURCE_EXHAUSTED: 429 Luna quota exceeded');
+      process.exit(1);
+    }
+    const probeResult = {
+      verdict: 'PASS',
+      summary: 'subscription CLI probe',
+      material_findings: [],
+      risk_checks_completed: false
+    };
+    console.log(JSON.stringify({ type: 'thread.started', thread_id: 'session-openai-probe-001' }));
+    console.log(JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'agent_message', text: JSON.stringify(probeResult) }
+    }));
+    console.log(JSON.stringify({ type: 'turn.completed' }));
+    process.exit(0);
+  }
+
+  if (isWorker) {
+    // Luna worker or Sol senior
+    if (isLuna && control.lunaWorkerMode === 'quota') {
+      console.error('RESOURCE_EXHAUSTED: 429 Luna quota exhausted');
+      process.exit(1);
+    }
+    if (isLuna && control.lunaWorkerMode === 'connection-failure') {
+      console.error('ECONNREFUSED upstream provider');
+      process.exit(1);
+    }
+    if (isLuna && control.lunaWorkerMode === 'generic-failure') {
+      console.error('worker command exited unsuccessfully');
+      process.exit(1);
+    }
+    writeFileSync('feature.txt', 'controlled worker update\\n');
+    const result = {
+      verdict: 'PASS',
+      summary: isLuna ? 'luna worker update' : 'sol senior update',
+      material_findings: [],
+      risk_checks_completed: true
+    };
+    console.log(JSON.stringify({ type: 'thread.started', thread_id: 'session-worker-' + Date.now() }));
+    console.log(JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'agent_message', text: JSON.stringify(result) }
+    }));
+    console.log(JSON.stringify({
+      type: 'turn.completed',
+      ...(control.openaiObservedModel ? { model: control.openaiObservedModel } : {})
+    }));
+    process.exit(0);
+  }
+
+  // Reviewer
+  const isNeedsFix = control.reviewerMode === 'needs-fix';
+  const result = {
+    verdict: isNeedsFix ? 'NEEDS_FIX' : 'PASS',
+    summary: isNeedsFix ? 'review defect' : 'terra review pass',
+    material_findings: isNeedsFix ? ['defect'] : [],
+    risk_checks_completed: true
+  };
+  console.log(JSON.stringify({ type: 'thread.started', thread_id: 'session-reviewer-' + Date.now() }));
+  console.log(JSON.stringify({
+    type: 'item.completed',
+    item: { type: 'agent_message', text: JSON.stringify(result) }
+  }));
+  console.log(JSON.stringify({ type: 'turn.completed' }));
+  process.exit(0);
+}
+`);
+
+  const task = {
+    schema_version: CONTROLLED_TASK_SCHEMA,
+    task_id: 'TASK-CONTROLLED-V2-001',
+    revision: 1,
+    base_sha: baseSha,
+    goal: 'Controlled delegation V2 test task',
+    acceptance_criteria: ['feature.txt is updated by worker'],
+    gates: [{
+      id: 'test-gate',
+      argv: [process.execPath, '-e', 'process.exit(0)'],
+      timeout_seconds: 5
+    }],
+    user_visible: false,
+    risk: 'LOW',
+    complexity: 'SIMPLE',
+    candidate_head: null,
+    contract_sha256: null,
+    execution: {
+      policy: CONTROLLED_POLICY_V2
+    },
+    write_paths: ['feature.txt'],
+    allowed_paths: ['feature.txt'],
+    gate_paths: [],
+    lane: 'NORMAL',
+    initial_lane: 'NORMAL',
+    initial_risk: 'LOW',
+    ...(options.taskOverrides ?? {})
+  };
+
+  const taskPath = path.join(dir, 'task.json');
+
+  const config = {
+    schema_version: CONTROLLED_CONFIG_SCHEMA,
+    billing: 'SUBSCRIPTION_ONLY',
+    mode: 'ASSISTED',
+    timeout_seconds: 5,
+    write_paths: ['feature.txt'],
+    gate_paths: [],
+    worker: {
+      provider: 'google',
+      model: 'gemini-3.8-flash-high',
+      cli: 'gemini',
+      command: [process.execPath, fakeCli]
+    },
+    fallback_worker: {
+      provider: 'openai',
+      model: 'gpt-5.6-luna',
+      effort: 'max',
+      command: [process.execPath, fakeCli]
+    },
+    reviewer: {
+      provider: 'openai',
+      model: 'gpt-5.6-terra',
+      effort: 'xhigh',
+      command: [process.execPath, fakeCli]
+    },
+    senior: {
+      provider: 'openai',
+      model: 'gpt-5.6-sol',
+      effort: 'medium',
+      command: [process.execPath, fakeCli]
+    },
+    elevated_reviewer: {
+      provider: 'openai',
+      model: 'gpt-5.6-sol',
+      effort: 'medium',
+      command: [process.execPath, fakeCli]
+    },
+    ...(options.configOverrides ?? {})
+  };
+
+  const frozen = await freezeControlledTask(taskPath, task, config);
+  task.contract_sha256 = frozen.contract_sha256;
+  if (frozen.config_sha256) task.config_sha256 = frozen.config_sha256;
+
+  const packetDir = path.join(dir, 'packets');
+
+  return {
+    dir,
+    repo,
+    taskPath,
+    task,
+    config,
+    lock: frozen.lock,
+    packetDir,
+    logFile,
+    controlFile,
+    setControl: async (updates) => {
+      const current = JSON.parse(await readFile(controlFile, 'utf8'));
+      await writeFile(controlFile, JSON.stringify({ ...current, ...updates }, null, 2));
+    },
+    getInvocations: async () => {
+      try { return JSON.parse(await readFile(logFile, 'utf8')); } catch { return []; }
+    },
+    cleanup: async () => {
+      try { await rm(dir, { recursive: true, force: true }); } catch {}
+    }
+  };
+}
+
+test('V2 Finding 1: runControlledBridge does NOT fall back to Luna on Gemini TOOL_PERMISSION_DENIED', async () => {
+  // Pure classifier assertions
+  assert.equal(isEligibleWorkerFallback({ status: 'WAITING_CAPABILITY', reason: 'TOOL_PERMISSION_DENIED', denied_actions: ['run_command'] }), false);
+  assert.equal(isEligibleWorkerFallback({ status: 'WAITING_CAPABILITY', reason: 'SCOPE_VIOLATION' }), false);
+  assert.equal(isEligibleWorkerFallback({ status: 'BLOCKED_TECHNICAL', reason: 'PERMISSION_DENIED' }), false);
+  assert.equal(isEligibleWorkerFallback({ status: 'BLOCKED_TECHNICAL', reason: 'AUTHORITY_DENIED' }), false);
+  assert.equal(isEligibleWorkerFallback({ status: 'BLOCKED_TECHNICAL', reason: 'generic unknown failure' }), false);
+  assert.equal(isEligibleWorkerFallback({ status: 'BLOCKED_TECHNICAL', reason: 'EXECUTION_THROW: worker crashed' }), true);
+  assert.equal(isEligibleWorkerFallback({ status: 'WAITING_QUOTA', reason: 'RESOURCE_EXHAUSTED' }), true);
+  assert.equal(isEligibleWorkerFallback({ status: 'INVALID_PROTOCOL', reason: 'INVALID_PROTOCOL' }), true);
+  assert.equal(isEligibleWorkerFallback({ timed_out: true, reason: 'TIMED_OUT' }), true);
+  assert.equal(isEligibleWorkerFallback({ code: 1, status: 'BLOCKED_TECHNICAL', reason: 'CONNECTION_FAILURE' }), true);
+  assert.equal(isEligibleWorkerFallback({ code: 1, reason: 'CRASH' }), true);
+  assert.equal(isEligibleWorkerFallback({ code: 1, status: 'BLOCKED_TECHNICAL', reason: 'PROCESS_EXIT_NONZERO' }), false);
+  assert.equal(isEligibleWorkerFallback({ code: 1, status: 'BLOCKED_TECHNICAL', reason: 'TEST_FAILURE' }), false);
+
+  // Behavioral bridge test
+  const f = await createControlledV2Fixture({ geminiMode: 'permission-denied' });
+  try {
+    const res = await runControlledBridge({
+      cwd: f.repo,
+      taskPath: f.taskPath,
+      config: f.config,
+      packetDir: f.packetDir,
+      pilot: true
+    });
+
+    assert.equal(res.status, 'WAITING_CAPABILITY');
+    assert.equal(res.reason, 'TOOL_PERMISSION_DENIED');
+    assert.equal(res.reconciliation_required, true);
+
+    const invs = await f.getInvocations();
+    const lunaCalls = invs.filter(i => i.model === 'gpt-5.6-luna');
+    assert.equal(lunaCalls.length, 0, 'Luna must never be called on Gemini permission denial');
+
+    assert.equal(existsSync(path.join(f.packetDir, 'fallback_handoff.json')), false);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('V2 Finding 1b: generic Gemini process failure fails closed without Luna fallback', async () => {
+  const f = await createControlledV2Fixture({ geminiMode: 'generic-failure' });
+  try {
+    const res = await runControlledBridge({
+      cwd: f.repo,
+      taskPath: f.taskPath,
+      config: f.config,
+      packetDir: f.packetDir,
+      pilot: true
+    });
+
+    assert.equal(res.status, 'BLOCKED_TECHNICAL');
+    assert.equal(res.reason, 'PROCESS_EXIT_NONZERO');
+    assert.equal(res.reconciliation_required, true);
+    const invs = await f.getInvocations();
+    assert.equal(invs.filter(i => i.model === 'gpt-5.6-luna').length, 0, 'Luna must not run for an unclassified process exit');
+    assert.equal(existsSync(path.join(f.packetDir, 'fallback_handoff.json')), false);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('V2 Finding 2: runControlledBridge handles eligible Gemini fallback, JIT Luna probe, pauses in FALLBACK_WAIT, and resume preserves 4-repair budget', async () => {
+  const f = await createControlledV2Fixture({
+    geminiMode: 'quota',
+    lunaProbeFail: true
+  });
+  try {
+    // Initial run: Gemini fails quota, Luna probe fails -> pauses in FALLBACK_WAIT
+    const res1 = await runControlledBridge({
+      cwd: f.repo,
+      taskPath: f.taskPath,
+      config: f.config,
+      packetDir: f.packetDir,
+      pilot: true
+    });
+
+    assert.equal(res1.status, 'WAITING_QUOTA');
+    assert.equal(res1.reconciliation_required, false);
+
+    const statePath = path.join(f.packetDir, 'state.json');
+    assert.ok(existsSync(statePath));
+    const state1 = await readJson(statePath);
+    assert.equal(state1.phase, 'FALLBACK_WAIT');
+    assert.equal(state1.active_worker, 'luna');
+    assert.equal(state1.budget.repair_count, 0, 'Fallback pause must not consume repair budget');
+    assert.equal(state1.budget.active_worker, 'luna');
+    assert.equal(state1.budget.fallback_occurred, true);
+
+    assert.ok(existsSync(path.join(f.packetDir, 'failed_invocations.json')));
+    assert.ok(existsSync(path.join(f.packetDir, 'fallback_handoff.json')));
+    assert.ok(existsSync(path.join(f.packetDir, 'capabilities', 'fallback_worker', '.receipts-chain.json')));
+    const handoff = await readJson(path.join(f.packetDir, 'fallback_handoff.json'));
+    assert.equal(handoff.from_worker, 'gemini-3.8-flash-high');
+    assert.equal(handoff.to_worker, 'gpt-5.6-luna');
+
+    // Make Luna available
+    await f.setControl({ lunaProbeFail: false, lunaWorkerMode: 'pass' });
+
+    // Resume run
+    const res2 = await runControlledBridge({
+      cwd: f.repo,
+      taskPath: f.taskPath,
+      config: f.config,
+      packetDir: f.packetDir,
+      pilot: true,
+      resume: true
+    });
+
+    assert.equal(res2.status, 'READY_FOR_OWNER');
+    assert.ok(res2.receipt);
+    assert.equal(res2.receipt.designated_implementer, 'gpt-5.6-luna');
+    assert.equal(res2.receipt.role, 'worker');
+    assert.equal(res2.receipt.observed_by_bridge.requested_model, 'gpt-5.6-luna');
+    assert.equal(res2.receipt.observed_by_bridge.requested_effort, 'max');
+
+    const invs = await f.getInvocations();
+    const geminiWorkerCalls = invs.filter(i => i.model === 'gemini-3.8-flash-high' && i.isWorker);
+    assert.equal(geminiWorkerCalls.length, 1, 'Gemini worker must not be double-run on resume');
+
+    const finalState = await readJson(statePath);
+    assert.equal(finalState.budget.repair_count, 0, 'Luna initial worker completion must preserve repair_count=0');
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('V2 records a classified Luna provider failure, waits safely, and resumes the reserved fallback attempt', async () => {
+  const f = await createControlledV2Fixture({ geminiMode: 'quota', lunaWorkerMode: 'quota' });
+  try {
+    const first = await runControlledBridge({
+      cwd: f.repo,
+      taskPath: f.taskPath,
+      config: f.config,
+      packetDir: f.packetDir,
+      pilot: true
+    });
+
+    assert.equal(first.status, 'WAITING_QUOTA');
+    assert.equal(first.reconciliation_required, false);
+    const statePath = path.join(f.packetDir, 'state.json');
+    const paused = await readJson(statePath);
+    assert.equal(paused.phase, 'FALLBACK_WAIT');
+    assert.equal(paused.budget.pending_reconcile, false);
+    assert.equal(paused.budget.repair_count, 0);
+    assert.equal(paused.budget.failed_invocations.length, 2);
+    assert.equal(paused.budget.failed_invocations[0].provider, 'google');
+    assert.equal(paused.budget.failed_invocations[1].provider, 'openai');
+    assert.equal(paused.budget.failed_invocations[1].requested_model, 'gpt-5.6-luna');
+    assert.equal(paused.budget.failed_invocations[1].reason, 'RESOURCE_EXHAUSTED');
+    assert.deepEqual(await readJson(path.join(f.packetDir, 'failed_invocations.json')), paused.budget.failed_invocations);
+
+    await f.setControl({ lunaWorkerMode: 'pass' });
+    const resumed = await runControlledBridge({
+      cwd: f.repo,
+      taskPath: f.taskPath,
+      config: f.config,
+      packetDir: f.packetDir,
+      pilot: true,
+      resume: true
+    });
+    assert.equal(resumed.status, 'READY_FOR_OWNER');
+    const invocations = await f.getInvocations();
+    assert.equal(invocations.filter(i => i.model === 'gemini-3.8-flash-high' && i.isWorker).length, 1);
+    const finalState = await readJson(statePath);
+    assert.equal(finalState.budget.repair_count, 0);
+    assert.equal(finalState.budget.failed_invocations.length, 2);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('V2 accepted-pilot validator accepts a completed Luna fallback with recorded Gemini handoff', realWindowsPilotOnly, async () => {
+  const f = await createControlledV2Fixture({ geminiMode: 'quota', lunaWorkerMode: 'pass' });
+  try {
+    const result = await runControlledBridge({
+      cwd: f.repo,
+      taskPath: f.taskPath,
+      config: f.config,
+      packetDir: f.packetDir,
+      pilot: true
+    });
+    assert.equal(result.status, 'READY_FOR_OWNER');
+    assert.equal(result.receipt.designated_implementer, 'gpt-5.6-luna');
+    assert.equal(result.receipt.observed_by_bridge.provider, 'openai');
+
+    const accepted = await validateControlledAcceptedPilot(f.config, f.packetDir);
+    assert.equal(accepted.receipt.designated_implementer, 'gpt-5.6-luna');
+    assert.equal(accepted.s.budget.fallback_occurred, true);
+    assert.equal(accepted.s.budget.failed_invocations.length, 1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('V2 Finding 3: runControlledBridge restart from FALLBACK_WAIT enforces tamper-resistance and fails closed to STOP', async () => {
+  const f = await createControlledV2Fixture({
+    geminiMode: 'quota',
+    lunaProbeFail: true
+  });
+  try {
+    const res1 = await runControlledBridge({
+      cwd: f.repo,
+      taskPath: f.taskPath,
+      config: f.config,
+      packetDir: f.packetDir,
+      pilot: true
+    });
+    assert.equal(res1.status, 'WAITING_QUOTA');
+
+    const statePath = path.join(f.packetDir, 'state.json');
+    const validState = await readJson(statePath);
+
+    // Tamper 1: contract_sha256
+    await writeJson(statePath, { ...validState, contract_sha256: 'a'.repeat(64) });
+    const resTamperContract = await runControlledBridge({
+      cwd: f.repo, taskPath: f.taskPath, config: f.config, packetDir: f.packetDir, pilot: true, resume: true
+    });
+    assert.equal(resTamperContract.status, 'STOP');
+    assert.equal(resTamperContract.reconciliation_required, true);
+
+    // Tamper 2: config_sha256
+    await writeJson(statePath, { ...validState, config_sha256: 'b'.repeat(64) });
+    const resTamperConfig = await runControlledBridge({
+      cwd: f.repo, taskPath: f.taskPath, config: f.config, packetDir: f.packetDir, pilot: true, resume: true
+    });
+    assert.equal(resTamperConfig.status, 'STOP');
+    assert.equal(resTamperConfig.reconciliation_required, true);
+
+    // Tamper 3: budget repair_count exceeds limit of 4
+    await writeJson(statePath, {
+      ...validState,
+      budget: { ...validState.budget, repair_count: 5 }
+    });
+    const resTamperBudget = await runControlledBridge({
+      cwd: f.repo, taskPath: f.taskPath, config: f.config, packetDir: f.packetDir, pilot: true, resume: true
+    });
+    assert.equal(resTamperBudget.status, 'STOP');
+    assert.equal(resTamperBudget.reconciliation_required, true);
+
+    // Tamper 4: worker model tamper
+    await writeJson(statePath, {
+      ...validState,
+      budget: {
+        ...validState.budget,
+        attempts: validState.budget.attempts.map(a => a.tier === 'worker' ? { ...a, model: 'gpt-4o' } : a)
+      }
+    });
+    const resTamperModel = await runControlledBridge({
+      cwd: f.repo, taskPath: f.taskPath, config: f.config, packetDir: f.packetDir, pilot: true, resume: true
+    });
+    assert.equal(resTamperModel.status, 'STOP');
+    assert.equal(resTamperModel.reconciliation_required, true);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('V2 Finding 3 & 6: validateControlledConfig and runControlledBridge enforce exact provider/model/effort and freeze hash', async () => {
+  const f = await createControlledV2Fixture();
+  try {
+    const validConfig = f.config;
+    assert.equal(validateControlledConfig(validConfig, CONTROLLED_POLICY_V2), validConfig);
+
+    // Provider checks: worker google, others openai
+    assert.throws(
+      () => validateControlledConfig({ ...validConfig, worker: { ...validConfig.worker, provider: 'openai' } }, CONTROLLED_POLICY_V2),
+      /worker provider must be 'google'/i
+    );
+    assert.throws(
+      () => validateControlledConfig({ ...validConfig, fallback_worker: { ...validConfig.fallback_worker, provider: 'google' } }, CONTROLLED_POLICY_V2),
+      /fallback_worker provider must be 'openai'/i
+    );
+    assert.throws(
+      () => validateControlledConfig({ ...validConfig, reviewer: { ...validConfig.reviewer, provider: 'google' } }, CONTROLLED_POLICY_V2),
+      /reviewer provider must be 'openai'/i
+    );
+    assert.throws(
+      () => validateControlledConfig({ ...validConfig, senior: { ...validConfig.senior, provider: 'google' } }, CONTROLLED_POLICY_V2),
+      /senior provider must be 'openai'/i
+    );
+    assert.throws(
+      () => validateControlledConfig({ ...validConfig, elevated_reviewer: { ...validConfig.elevated_reviewer, provider: 'google' } }, CONTROLLED_POLICY_V2),
+      /elevated reviewer provider must be 'openai'/i
+    );
+
+    // Reviewer: exact gpt-5.6-terra, effort xhigh (reject substring terra)
+    assert.throws(
+      () => validateControlledConfig({ ...validConfig, reviewer: { ...validConfig.reviewer, model: 'terra' } }, CONTROLLED_POLICY_V2),
+      /normal reviewer model must be 'gpt-5\.6-terra'/i
+    );
+    assert.throws(
+      () => validateControlledConfig({ ...validConfig, reviewer: { ...validConfig.reviewer, effort: 'high' } }, CONTROLLED_POLICY_V2),
+      /normal reviewer effort must be 'xhigh'/i
+    );
+
+    // Fallback worker: exact gpt-5.6-luna, effort max
+    assert.throws(
+      () => validateControlledConfig({ ...validConfig, fallback_worker: { ...validConfig.fallback_worker, model: 'luna' } }, CONTROLLED_POLICY_V2),
+      /fallback_worker model must be 'gpt-5\.6-luna'/i
+    );
+    assert.throws(
+      () => validateControlledConfig({ ...validConfig, fallback_worker: { ...validConfig.fallback_worker, effort: 'high' } }, CONTROLLED_POLICY_V2),
+      /Luna fallback_worker effort must be 'max'/i
+    );
+
+    // Senior / Elevated: exact gpt-5.6-sol, effort medium
+    assert.throws(
+      () => validateControlledConfig({ ...validConfig, senior: { ...validConfig.senior, model: 'gpt-6-astra' } }, CONTROLLED_POLICY_V2),
+      /senior model must be 'gpt-5\.6-sol'/i
+    );
+    assert.throws(
+      () => validateControlledConfig({ ...validConfig, senior: { ...validConfig.senior, effort: 'low' } }, CONTROLLED_POLICY_V2),
+      /Sol senior effort must be 'medium'/i
+    );
+    assert.throws(
+      () => validateControlledConfig({ ...validConfig, elevated_reviewer: { ...validConfig.elevated_reviewer, model: 'gpt-6-astra' } }, CONTROLLED_POLICY_V2),
+      /elevated reviewer model must be 'gpt-5\.6-sol'/i
+    );
+    assert.throws(
+      () => validateControlledConfig({ ...validConfig, elevated_reviewer: { ...validConfig.elevated_reviewer, effort: 'low' } }, CONTROLLED_POLICY_V2),
+      /Sol elevated reviewer effort must be 'medium'/i
+    );
+
+    // Freeze-time config hash tampering in runControlledBridge
+    // 1. Config argument drift triggers CONFIG_MISMATCH
+    const driftedConfig = { ...f.config, timeout_seconds: 99 };
+    await assert.rejects(
+      () => runControlledBridge({ cwd: f.repo, taskPath: f.taskPath, config: driftedConfig, packetDir: f.packetDir, pilot: true }),
+      /CONFIG_MISMATCH/i
+    );
+
+    // 2. Task config_sha256 drift triggers CONFIG_MISMATCH independently while leaving task contract valid
+    const origTask = await readJson(f.taskPath);
+    await writeJson(f.taskPath, {
+      ...origTask,
+      config_sha256: 'e'.repeat(64)
+    });
+    await assert.rejects(
+      () => runControlledBridge({ cwd: f.repo, taskPath: f.taskPath, config: f.config, packetDir: f.packetDir, pilot: true }),
+      /CONFIG_MISMATCH/i
+    );
+    await writeJson(f.taskPath, origTask);
+
+    // 3. Contract tampering triggers CONTRACT_MISMATCH with precedence
+    await writeJson(f.taskPath, {
+      ...origTask,
+      goal: 'tampered canonical contract goal'
+    });
+    await assert.rejects(
+      () => runControlledBridge({ cwd: f.repo, taskPath: f.taskPath, config: f.config, packetDir: f.packetDir, pilot: true }),
+      /CONTRACT_MISMATCH/i
+    );
+    await writeJson(f.taskPath, origTask);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('V2 Finding 4 & 5: buildReceipt assigns role senior to Sol/Astra and report includes requested_versus_observed accounting', async () => {
+  const f = await createControlledV2Fixture();
+  try {
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.repo, encoding: 'utf8' }).trim();
+    const manifest = captureManifest(f.repo, head, ['feature.txt']);
+
+    const runDir = path.join(f.packetDir, 'test-senior-run');
+    await mkdir(runDir, { recursive: true });
+    const receiptRef = {
+      receipt_root_id: 'root-001',
+      chain_root_id: 'chain-001',
+      receipt_id: 'receipt-001',
+      receipt_sha256: 'c'.repeat(64)
+    };
+
+    const seniorObserved = {
+      provider: 'openai',
+      requested_model: 'gpt-5.6-sol',
+      requested_effort: 'medium',
+      redacted_invocation: { argv: ['fake-cli'] },
+      started_at: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+      termination_status: 'SUCCESS',
+      timeout: false,
+      input_packet_hash: 'd'.repeat(64),
+      output_hash: 'e'.repeat(64)
+    };
+    const seniorReported = {
+      actual_model: 'gpt-5.6-sol',
+      actual_effort: 'medium',
+      session_id: 'session-senior-sol-001'
+    };
+    const seniorBindings = {
+      policy: CONTROLLED_POLICY_V2,
+      bridge_run_id: 'bridge-sol-001',
+      task_id: f.task.task_id,
+      revision: f.task.revision,
+      contract_sha256: f.lock.contract_sha256,
+      config_sha256: controlledConfigHash(f.config),
+      bridge_source_sha256: await bridgeSourceHash(),
+      designated_implementer: 'gpt-5.6-sol',
+      role: 'senior',
+      base_sha: f.task.base_sha,
+      head_before: head,
+      invocation_receipt_reference: receiptRef
+    };
+
+    const receipt = buildReceipt(seniorObserved, seniorReported, seniorBindings, manifest);
+    assert.equal(receipt.role, 'senior');
+    assert.equal(receipt.designated_implementer, 'gpt-5.6-sol');
+    assert.equal(receipt.observed_by_bridge.requested_model, 'gpt-5.6-sol');
+    assert.equal(receipt.observed_by_bridge.requested_effort, 'medium');
+
+    // Report accounting test
+    const { aggregateInvocations } = await import('../scripts/lib/report.mjs');
+    const mockReceipts = [
+      {
+        schema_version: 'qq.workflow.invocation-receipt.v1',
+        receipt_id: 'inv-gemini-001',
+        role: 'worker',
+        provider: 'google',
+        binding: { model: 'gemini-3.8-flash-high', effort: null },
+        result: { observed_models: ['gemini-3.8-flash-high'], status: 'SUCCESS' }
+      },
+      {
+        schema_version: 'qq.workflow.invocation-receipt.v1',
+        receipt_id: 'inv-luna-001',
+        role: 'worker',
+        provider: 'openai',
+        binding: { model: 'gpt-5.6-luna', effort: 'max' },
+        result: { observed_models: ['gpt-5.6-luna'], status: 'SUCCESS' }
+      },
+      {
+        schema_version: 'qq.workflow.invocation-receipt.v1',
+        receipt_id: 'inv-sol-001',
+        role: 'senior',
+        provider: 'openai',
+        binding: { model: 'gpt-5.6-sol', effort: 'medium' },
+        result: { observed_models: ['gpt-5.6-sol'], status: 'SUCCESS' }
+      }
+    ];
+
+    const agg = aggregateInvocations(mockReceipts, true);
+    assert.equal(agg.count, 3);
+    assert.ok(Array.isArray(agg.requested_versus_observed));
+    assert.equal(agg.requested_versus_observed.length, 3);
+    assert.equal(agg.requested_versus_observed[0].model_match, 'matched');
+    assert.equal(agg.requested_versus_observed[1].model_match, 'matched');
+    assert.equal(agg.requested_versus_observed[2].model_match, 'matched');
+    assert.equal(agg.requested_versus_observed[2].role, 'senior');
+
+    // Bridge execution receipt shape
+    const bridgeAgg = aggregateInvocations([receipt], true);
+    assert.equal(bridgeAgg.count, 1);
+    assert.equal(bridgeAgg.requested_versus_observed[0].role, 'senior');
+    assert.equal(bridgeAgg.requested_versus_observed[0].provider, 'openai');
+    assert.equal(bridgeAgg.requested_versus_observed[0].requested_model, 'gpt-5.6-sol');
+    assert.deepEqual(bridgeAgg.requested_versus_observed[0].observed_models, ['gpt-5.6-sol']);
+    assert.equal(bridgeAgg.requested_versus_observed[0].model_match, 'matched');
+
+    // Mismatched and uncertain model matching
+    const mismatchAgg = aggregateInvocations([
+      {
+        role: 'worker',
+        provider: 'google',
+        requested_model: 'gemini-3.8-flash-high',
+        observed_models: ['gemini-1.5-pro']
+      }
+    ], true);
+    assert.equal(mismatchAgg.requested_versus_observed[0].model_match, 'mismatched');
+
+    const uncertainAgg = aggregateInvocations([
+      {
+        role: 'worker',
+        binding: { model: 'gemini-3.8-flash-high' },
+        result: { observed_models: [] }
+      },
+      {
+        role: 'worker',
+        provider: 'openai'
+      }
+    ], true);
+    assert.equal(uncertainAgg.requested_versus_observed[0].model_match, 'uncertain');
+    assert.equal(uncertainAgg.requested_versus_observed[1].model_match, 'uncertain');
+
+    // Model name normalization with models/ prefix and :latest suffix
+    const normAgg = aggregateInvocations([
+      {
+        binding: { model: 'models/gemini-3.8-flash-high:latest', provider: 'google', role: 'worker' },
+        result: { observed_models: ['gemini-3.8-flash-high'] }
+      }
+    ], true);
+    assert.equal(normAgg.requested_versus_observed[0].model_match, 'matched');
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('Terra Finding 1: runControlledBridge handles provider observed models, fails closed on conflicting/substituted models, and leaves unobserved null', async () => {
+  // 1. Matching provider observation reaches receipt
+  const fMatch = await createControlledV2Fixture();
+  try {
+    const res = await runControlledBridge({
+      cwd: fMatch.repo,
+      taskPath: fMatch.taskPath,
+      config: fMatch.config,
+      packetDir: fMatch.packetDir,
+      pilot: true
+    });
+    assert.equal(res.status, 'READY_FOR_OWNER');
+    assert.ok(res.receipt);
+    assert.equal(res.receipt.reported_by_provider?.actual_model, 'gemini-3.8-flash-high');
+    assert.deepEqual(res.receipt.reported_by_provider?.observed_models, ['gemini-3.8-flash-high']);
+  } finally {
+    await fMatch.cleanup();
+  }
+
+  // 2. Conflicting observed models fails closed before readiness
+  const fConflict = await createControlledV2Fixture();
+  try {
+    await fConflict.setControl({
+      geminiModels: { 'gemini-3.8-flash-high': 1, 'gpt-4o': 1 }
+    });
+    const res = await runControlledBridge({
+      cwd: fConflict.repo,
+      taskPath: fConflict.taskPath,
+      config: fConflict.config,
+      packetDir: fConflict.packetDir,
+      pilot: true
+    });
+    assert.equal(res.status, 'BLOCKED_TECHNICAL');
+    assert.equal(res.failure_code, 'EXECUTION_MISMATCH');
+    assert.equal(res.reconciliation_required, true);
+    assert.match(res.error, /Multiple conflicting observed models reported/i);
+  } finally {
+    await fConflict.cleanup();
+  }
+
+  // 3. Provider model substitution fails closed before readiness
+  const fSubst = await createControlledV2Fixture();
+  try {
+    await fSubst.setControl({
+      geminiModels: { 'gpt-4o': 1 }
+    });
+    const res = await runControlledBridge({
+      cwd: fSubst.repo,
+      taskPath: fSubst.taskPath,
+      config: fSubst.config,
+      packetDir: fSubst.packetDir,
+      pilot: true
+    });
+    assert.equal(res.status, 'BLOCKED_TECHNICAL');
+    assert.equal(res.failure_code, 'EXECUTION_MISMATCH');
+    assert.equal(res.reconciliation_required, true);
+    assert.match(res.error, /does not match requested_model/i);
+  } finally {
+    await fSubst.cleanup();
+  }
+
+  // 4. Unobserved models leaves actual_model null (never inferred from requested)
+  const fUnobserved = await createControlledV2Fixture();
+  try {
+    await fUnobserved.setControl({
+      geminiModels: {}
+    });
+    const res = await runControlledBridge({
+      cwd: fUnobserved.repo,
+      taskPath: fUnobserved.taskPath,
+      config: fUnobserved.config,
+      packetDir: fUnobserved.packetDir,
+      pilot: true
+    });
+    assert.equal(res.status, 'READY_FOR_OWNER');
+    assert.ok(res.receipt);
+    assert.equal(res.receipt.reported_by_provider?.actual_model, null);
+  } finally {
+    await fUnobserved.cleanup();
+  }
+});
+
+test('Terra Finding 2: runControlledBridge restart from FALLBACK_WAIT/FALLBACK_HANDOFF fails closed on all handoff/failed_invocations tampers', async () => {
+  const f = await createControlledV2Fixture({
+    geminiMode: 'quota',
+    lunaProbeFail: true
+  });
+  try {
+    // Initial run triggers fallback to Luna, pauses in FALLBACK_WAIT
+    const res1 = await runControlledBridge({
+      cwd: f.repo,
+      taskPath: f.taskPath,
+      config: f.config,
+      packetDir: f.packetDir,
+      pilot: true
+    });
+    assert.equal(res1.status, 'WAITING_QUOTA');
+
+    const statePath = path.join(f.packetDir, 'state.json');
+    const diskHandoffPath = path.join(f.packetDir, 'fallback_handoff.json');
+    const diskFailedPath = path.join(f.packetDir, 'failed_invocations.json');
+    assert.ok(existsSync(statePath));
+    assert.ok(existsSync(diskHandoffPath));
+    assert.ok(existsSync(diskFailedPath));
+
+    const validState = await readJson(statePath);
+    const validDiskHandoff = await readJson(diskHandoffPath);
+    const validDiskFailed = await readJson(diskFailedPath);
+
+    // Tamper 1: handoff reason edited in state.fallback_handoff
+    await writeJson(statePath, {
+      ...validState,
+      fallback_handoff: { ...validState.fallback_handoff, reason: 'TAMPERED_REASON' }
+    });
+    const resTamperHandoffReason = await runControlledBridge({
+      cwd: f.repo, taskPath: f.taskPath, config: f.config, packetDir: f.packetDir, pilot: true, resume: true
+    });
+    assert.equal(resTamperHandoffReason.status, 'STOP');
+    assert.equal(resTamperHandoffReason.reconciliation_required, true);
+    await writeJson(statePath, validState);
+
+    // Tamper 2: handoff timestamp edited in budget
+    await writeJson(statePath, {
+      ...validState,
+      budget: {
+        ...validState.budget,
+        fallback_handoff: { ...validState.budget.fallback_handoff, timestamp: '2020-01-01T00:00:00.000Z' }
+      }
+    });
+    const resTamperTimestamp = await runControlledBridge({
+      cwd: f.repo, taskPath: f.taskPath, config: f.config, packetDir: f.packetDir, pilot: true, resume: true
+    });
+    assert.equal(resTamperTimestamp.status, 'STOP');
+    assert.equal(resTamperTimestamp.reconciliation_required, true);
+    await writeJson(statePath, validState);
+
+    // Tamper 3: extra handoff entries in handoff_history (cardinality > 1)
+    await writeJson(statePath, {
+      ...validState,
+      budget: {
+        ...validState.budget,
+        handoff_history: [...validState.budget.handoff_history, { ...validState.budget.handoff_history[0] }]
+      }
+    });
+    const resTamperCardinality = await runControlledBridge({
+      cwd: f.repo, taskPath: f.taskPath, config: f.config, packetDir: f.packetDir, pilot: true, resume: true
+    });
+    assert.equal(resTamperCardinality.status, 'STOP');
+    assert.equal(resTamperCardinality.reconciliation_required, true);
+    await writeJson(statePath, validState);
+
+    // Tamper 4: failed_invocations entry missing required field (e.g. provider)
+    await writeJson(statePath, {
+      ...validState,
+      budget: {
+        ...validState.budget,
+        failed_invocations: [{ model: 'gemini-3.8-flash-high', status: 'WAITING_QUOTA' }]
+      }
+    });
+    const resTamperFailed = await runControlledBridge({
+      cwd: f.repo, taskPath: f.taskPath, config: f.config, packetDir: f.packetDir, pilot: true, resume: true
+    });
+    assert.equal(resTamperFailed.status, 'STOP');
+    assert.equal(resTamperFailed.reconciliation_required, true);
+    await writeJson(statePath, validState);
+
+    // Tamper 5: handoff_digest mismatch
+    await writeJson(statePath, {
+      ...validState,
+      budget: {
+        ...validState.budget,
+        fallback_handoff: { ...validState.budget.fallback_handoff, digest: 'f'.repeat(64) },
+        handoff_history: [{ ...validState.budget.handoff_history[0], digest: 'f'.repeat(64) }]
+      }
+    });
+    const resTamperDigest = await runControlledBridge({
+      cwd: f.repo, taskPath: f.taskPath, config: f.config, packetDir: f.packetDir, pilot: true, resume: true
+    });
+    assert.equal(resTamperDigest.status, 'STOP');
+    assert.equal(resTamperDigest.reconciliation_required, true);
+    await writeJson(statePath, validState);
+
+    // Tamper 6: fallback_handoff.json on disk modified
+    await writeJson(diskHandoffPath, { ...validDiskHandoff, reason: 'TAMPERED_DISK_REASON' });
+    const resTamperDiskHandoff = await runControlledBridge({
+      cwd: f.repo, taskPath: f.taskPath, config: f.config, packetDir: f.packetDir, pilot: true, resume: true
+    });
+    assert.equal(resTamperDiskHandoff.status, 'STOP');
+    assert.equal(resTamperDiskHandoff.reconciliation_required, true);
+    await writeJson(diskHandoffPath, validDiskHandoff);
+
+    // Tamper 7: failed_invocations.json on disk modified
+    await writeJson(diskFailedPath, [{ ...validDiskFailed[0], reason: 'TAMPERED_DISK_REASON' }]);
+    const resTamperDiskFailed = await runControlledBridge({
+      cwd: f.repo, taskPath: f.taskPath, config: f.config, packetDir: f.packetDir, pilot: true, resume: true
+    });
+    assert.equal(resTamperDiskFailed.status, 'STOP');
+    assert.equal(resTamperDiskFailed.reconciliation_required, true);
+    await writeJson(diskFailedPath, validDiskFailed);
+
+    // Tamper 8: phase is FALLBACK_WAIT but fallback_occurred is false
+    await writeJson(statePath, {
+      ...validState,
+      budget: { ...validState.budget, fallback_occurred: false, fallback_handoff: null, handoff_history: [] }
+    });
+    const resTamperFallbackOccurred = await runControlledBridge({
+      cwd: f.repo, taskPath: f.taskPath, config: f.config, packetDir: f.packetDir, pilot: true, resume: true
+    });
+    assert.equal(resTamperFallbackOccurred.status, 'STOP');
+    assert.equal(resTamperFallbackOccurred.reconciliation_required, true);
+    await writeJson(statePath, validState);
+
+    // Tamper 9: phase is FALLBACK_HANDOFF but active_worker is gemini
+    await writeJson(statePath, {
+      ...validState,
+      phase: 'FALLBACK_HANDOFF',
+      active_worker: 'gemini',
+      budget: { ...validState.budget, active_worker: 'gemini' }
+    });
+    const resTamperHandoffWorker = await runControlledBridge({
+      cwd: f.repo, taskPath: f.taskPath, config: f.config, packetDir: f.packetDir, pilot: true, resume: true
+    });
+    assert.equal(resTamperHandoffWorker.status, 'STOP');
+    assert.equal(resTamperHandoffWorker.reconciliation_required, true);
+    await writeJson(statePath, validState);
+
+    // Verification: Failed Gemini invocation must never consume a repair from the repair budget
+    // 1. Resume from FALLBACK_WAIT with Luna available, reviewer reports NEEDS_FIX
+    await f.setControl({ lunaProbeFail: false, lunaWorkerMode: 'pass', reviewerMode: 'needs-fix' });
+    const resLunaInitial = await runControlledBridge({
+      cwd: f.repo, taskPath: f.taskPath, config: f.config, packetDir: f.packetDir, pilot: true, resume: true
+    });
+    assert.equal(resLunaInitial.status, 'NEEDS_FIX');
+    const stateAfterNeedsFix = await readJson(statePath);
+    assert.equal(stateAfterNeedsFix.budget.repair_count, 0, 'No repair consumed before repair attempt');
+
+    // 2. Second resume performs Luna repair 1, reviewer reports PASS
+    await f.setControl({ reviewerMode: 'pass' });
+    const resLunaRepair = await runControlledBridge({
+      cwd: f.repo, taskPath: f.taskPath, config: f.config, packetDir: f.packetDir, pilot: true, resume: true
+    });
+    assert.equal(resLunaRepair.status, 'READY_FOR_OWNER');
+    const stateFinal = await readJson(statePath);
+    assert.equal(stateFinal.budget.repair_count, 1, 'Failed Gemini invocation must never consume a repair; only Luna repair counted');
   } finally {
     await f.cleanup();
   }

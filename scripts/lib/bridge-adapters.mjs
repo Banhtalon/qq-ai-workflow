@@ -2,7 +2,7 @@ import path from 'node:path';
 import {writeFile,mkdir,readFile} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
 import os from 'node:os';
-import {execute,subscriptionEnv,failureStatus,safe} from './bridge-process.mjs';
+import {execute,subscriptionEnv,failureReason,failureStatus,safe} from './bridge-process.mjs';
 import {beginInvocation,finishInvocation} from './receipts.mjs';
 
 export const resultSchema={type:'object',additionalProperties:false,required:['verdict','summary','material_findings','risk_checks_completed'],properties:{verdict:{type:'string',enum:['PASS','NEEDS_FIX','BLOCKED']},summary:{type:'string'},material_findings:{type:'array',items:{type:'string'}},risk_checks_completed:{type:'boolean'}}};
@@ -18,22 +18,22 @@ export async function invocation(binding,{cwd,packetDir,role,prompt}) {
   const b=validateBinding(binding),env=subscriptionEnv();await mkdir(packetDir,{recursive:true});
   if(b.provider==='openai'){
     const schema=path.join(packetDir,'result-schema.json');await writeFile(schema,JSON.stringify(resultSchema));
-    const args=[...b.command,'exec','--ignore-user-config','-c','forced_login_method="chatgpt"','-c','model_provider="openai"','-c','approval_policy="never"','-m',b.model,'-s',role==='worker'?'workspace-write':'read-only','--json','--output-schema',schema,'-C',cwd];
+    const args=[...b.command,'exec','--ignore-user-config','-c','forced_login_method="chatgpt"','-c','model_provider="openai"','-c','approval_policy="never"','-m',b.model,'-s',role==='worker'||role==='senior'?'workspace-write':'read-only','--json','--output-schema',schema,'-C',cwd];
     if(b.effort)args.push('-c',`model_reasoning_effort="${b.effort}"`);args.push('-');return {argv:args,env,input:prompt};
   }
   if(b.cli!=='gemini'){
-    if(role==='reviewer')throw Error('Antigravity plan is not a read-only permission boundary; configure Codex reviewer');
+    if(role==='reviewer'||role==='elevated_reviewer')throw Error('Antigravity plan is not a read-only permission boundary; configure Codex reviewer');
     const settingsPath=path.join(os.homedir(),'.gemini','antigravity-cli','settings.json');const settings=JSON.parse(await readFile(settingsPath,'utf8'));
     if(settings.useG1Credits===undefined){settings.useG1Credits=false;await writeFile(settingsPath,JSON.stringify(settings,null,2)+'\n');}assertSubscriptionSettings(settings);
     const schema=path.join(packetDir,'result-schema.json');await writeFile(schema,JSON.stringify(resultSchema));
-    return {argv:[...b.command,'--add-dir',cwd,'--input-format','stream-json','--output-format','stream-json','--json-schema',schema,'--disable-slash-commands','--model',b.model,...(role==='worker'?['--mode','accept-edits']:[])],env,input:JSON.stringify({event:'user',message:{content:`The task repository is ${cwd}. Work only in this directory, not the default CLI scratch directory. Use built-in file tools; do not invoke shell commands or delegate. The Lead runs git and gates.\n${prompt}`}})+'\n'};
+    return {argv:[...b.command,'--add-dir',cwd,'--input-format','stream-json','--output-format','stream-json','--json-schema',schema,'--disable-slash-commands','--model',b.model,...(role==='worker'||role==='senior'?['--mode','accept-edits']:[])],env,input:JSON.stringify({event:'user',message:{content:`The task repository is ${cwd}. Work only in this directory, not the default CLI scratch directory. Use built-in file tools; do not invoke shell commands or delegate. The Lead runs git and gates.\n${prompt}`}})+'\n'};
   }
   const settings=path.join(packetDir,'gemini-subscription.json');await writeFile(settings,JSON.stringify({security:{auth:{selectedType:'oauth-personal',enforcedType:'oauth-personal'},enablePermanentToolApproval:false},general:{enableAutoUpdate:false},tools:{autoAccept:false},mcpServers:{}}));env.GEMINI_CLI_SYSTEM_SETTINGS_PATH=settings;
-  return {argv:[...b.command,'--model',b.model,'--approval-mode',role==='worker'?'auto_edit':'plan','--output-format','json','--extensions','none','--prompt','Follow the task supplied on stdin.'],env,input:prompt};
+  return {argv:[...b.command,'--model',b.model,'--approval-mode',role==='worker'||role==='senior'?'auto_edit':'plan','--output-format','json','--extensions','none','--prompt','Follow the task supplied on stdin.'],env,input:prompt};
 }
 export function assertSubscriptionSettings(settings){if(settings.useG1Credits!==false||settings.modelProvider)throw Error('Antigravity requires useG1Credits=false and default account provider; no API/credit fallback');}
 export function protocolMetadata(provider,stdout,cli) {
-  const events=stdout.trim().split(/\r?\n/).flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}});const session=provider==='openai'?events.find(e=>e.type==='thread.started')?.thread_id:cli==='antigravity'?events.find(e=>e.event==='result')?.result?.conversation_id??events.find(e=>e.event==='init')?.conversation_id:events[0]?.session_id;const denied=cli==='antigravity'?events.flatMap(e=>e.result?.denied_actions??[]).map(x=>x.action).filter(x=>typeof x==='string'):[];return safe({...(typeof session==='string'&&session?{session_id:session}:{}),...(denied.length?{denied_actions:denied}:{})});
+  const events=stdout.trim().split(/\r?\n/).flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}});const session=provider==='openai'?events.find(e=>e.type==='thread.started')?.thread_id:cli==='antigravity'?events.find(e=>e.event==='result')?.result?.conversation_id??events.find(e=>e.event==='init')?.conversation_id:events[0]?.session_id;const denied=cli==='antigravity'?events.flatMap(e=>e.result?.denied_actions??[]).map(x=>x.action).filter(x=>typeof x==='string'):(Array.isArray(events[0]?.denied_actions)?events[0].denied_actions.map(x=>typeof x==='string'?x:x?.action).filter(Boolean):[]);return safe({...(typeof session==='string'&&session?{session_id:session}:{}),...(denied.length?{denied_actions:denied}:{})});
 }
 function transientOpenAITransportEvent(event) {if(event.type!=='error')return false;const message=event.message??event.error?.message??'';return /^Reconnecting\.\.\. \d+\/\d+ \(/.test(message)||/^Falling back from WebSockets to HTTPS transport\./.test(message);}
 export function parseProtocol(provider,stdout,cli='gemini',{capabilityProbe=false}={}) {
@@ -48,7 +48,7 @@ export async function invoke(binding,options) {
   const spec=await invocation(binding,options),started_at=new Date().toISOString(),receiptKind=options.receiptKind;const context=await beginInvocation({packetDir:options.packetDir,role:options.role,receiptKind,binding,prompt:options.prompt,started_at});let r;
   try {r=await execute(spec.argv,{...spec,cwd:options.cwd,timeoutSeconds:options.timeoutSeconds,signal:options.signal});}
   catch(error){const finished_at=new Date().toISOString();const failed=safe({provider:binding.provider,requested_model:binding.model,requested_effort:binding.effort??null,argv:spec.argv,code:null,reason:'EXECUTION_THROW',started_at,finished_at,status:'BLOCKED_TECHNICAL'});await finishInvocation({packetDir:options.packetDir,receiptRoot:options.receiptRoot,role:options.role,receiptKind,binding,prompt:options.prompt,result:failed,started_at,finished_at,context});throw error;}
-  const record=safe({provider:binding.provider,requested_model:binding.model,requested_effort:binding.effort??null,argv:spec.argv,code:r.code,reason:r.reason,started_at:r.started_at??started_at,finished_at:r.finished_at??new Date().toISOString(),status:failureStatus(r)});Object.assign(record,protocolMetadata(binding.provider,r.stdout,binding.cli??(binding.provider==='openai'?'codex':'antigravity')));
+  const record=safe({provider:binding.provider,requested_model:binding.model,requested_effort:binding.effort??null,argv:spec.argv,code:r.code,reason:failureReason(r),started_at:r.started_at??started_at,finished_at:r.finished_at??new Date().toISOString(),status:failureStatus(r)});Object.assign(record,protocolMetadata(binding.provider,r.stdout,binding.cli??(binding.provider==='openai'?'codex':'antigravity')));
   if(!record.status&&record.denied_actions?.length){record.status='WAITING_CAPABILITY';record.reason='TOOL_PERMISSION_DENIED';}
   if(!record.status){try{Object.assign(record,parseProtocol(binding.provider,r.stdout,binding.cli??(binding.provider==='openai'?'codex':'antigravity'),{capabilityProbe:receiptKind==='PROBE'}));}catch{record.status='BLOCKED_TECHNICAL';record.reason='INVALID_PROTOCOL';}}
   await finishInvocation({packetDir:options.packetDir,receiptRoot:options.receiptRoot,role:options.role,receiptKind,binding,prompt:options.prompt,result:record,started_at:record.started_at,finished_at:record.finished_at,context});return record;
