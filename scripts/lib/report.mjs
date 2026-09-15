@@ -99,20 +99,72 @@ function nextActor(state,hasBoundProductEvidence,hasBlockers=false){
 }
 
 function usageValue(usage,key){const value=usage?.[key];return Number.isFinite(value)&&value>=0?value:null;}
-function aggregateInvocations(items,observed){
+function normModel(m){if(typeof m!=='string')return null;let s=m.trim().toLowerCase();if(s.startsWith('models/'))s=s.slice(7);if(s.endsWith(':latest'))s=s.slice(0,-7);return s||null;}
+export function aggregateInvocations(items,observed){
   const groups=new Map();let anyUsage=false;
   const totals={source:'unavailable',input_tokens:null,output_tokens:null,reasoning_tokens:null,cached_tokens:null,total_tokens:null};
   const known={input_tokens:0,output_tokens:0,reasoning_tokens:0,cached_tokens:0,total_tokens:0};
+  const invocations=items.map(item=>{
+    const role=item.role??item.phase??item.kind??item.binding?.role??'unavailable';
+    const provider=item.provider??item.observed_by_bridge?.provider??item.binding?.provider??'unavailable';
+    const requested_model=item.requested_model??item.observed_by_bridge?.requested_model??item.binding?.model??'unavailable';
+    let observed_models=[];
+    if(Array.isArray(item.observed_models)&&item.observed_models.length>0){
+      observed_models=item.observed_models.filter(x=>typeof x==='string'&&x.trim());
+    }else if(Array.isArray(item.result?.observed_models)&&item.result.observed_models.length>0){
+      observed_models=item.result.observed_models.filter(x=>typeof x==='string'&&x.trim());
+    }else if(typeof item.reported_by_provider?.actual_model==='string'&&item.reported_by_provider.actual_model.trim()){
+      observed_models=[item.reported_by_provider.actual_model.trim()];
+    }else if(typeof item.observed_models==='string'&&item.observed_models.trim()){
+      observed_models=[item.observed_models.trim()];
+    }else if(typeof item.result?.observed_models==='string'&&item.result.observed_models.trim()){
+      observed_models=[item.result.observed_models.trim()];
+    }else if(Array.isArray(item.observed_models)){
+      observed_models=item.observed_models.filter(x=>typeof x==='string'&&x.trim());
+    }else if(Array.isArray(item.result?.observed_models)){
+      observed_models=item.result.observed_models.filter(x=>typeof x==='string'&&x.trim());
+    }
+    const requested_effort=item.requested_effort??item.observed_by_bridge?.requested_effort??item.binding?.effort??null;
+    const normReq=(requested_model!=='unavailable')?normModel(requested_model):null;
+    const normObs=observed_models.map(normModel).filter(Boolean);
+    let model_match='uncertain';
+    if(normObs.length>0&&normReq){
+      model_match=normObs.includes(normReq)?'matched':'mismatched';
+    }
+    return {
+      receipt_id:item.receipt_id??item.result?.receipt_id??null,
+      role,
+      provider,
+      requested_model,
+      observed_models,
+      requested_effort,
+      model_match
+    };
+  });
   for(const item of items){
-    const role=item.role??item.phase??item.kind??'unavailable',provider=item.provider??item.observed_by_bridge?.provider??'unavailable';
+    const role=item.role??item.phase??item.kind??item.binding?.role??'unavailable',
+          provider=item.provider??item.observed_by_bridge?.provider??item.binding?.provider??'unavailable';
     const key=`${role}\0${provider}`;groups.set(key,{role,provider,count:(groups.get(key)?.count??0)+1});
-    const usage=item.usage??item.reported_by_provider?.usage??null;
+    const usage=item.usage??item.reported_by_provider?.usage??item.result?.usage??null;
     const fields={input_tokens:['input_tokens'],output_tokens:['output_tokens'],reasoning_tokens:['reasoning_tokens','thinking_tokens'],cached_tokens:['cached_tokens','cache_read_tokens'],total_tokens:['total_tokens']};
     for(const [target,sources] of Object.entries(fields)){let value=null;for(const source of sources){value=usageValue(usage,source);if(value!==null)break;}if(value!==null){totals[target]=(totals[target]??0)+value;known[target]++;anyUsage=true;}}
   }
   for(const field of Object.keys(known))if(known[field]!==items.length)totals[field]=null;
   totals.source=!anyUsage?'unavailable':Object.values(known).every(count=>count===items.length)?'reported':'partial';
-  return {observed,count:observed?items.length:null,by_role_provider:[...groups.values()],usage:totals};
+  return {
+    observed,
+    count:observed?items.length:null,
+    by_role_provider:[...groups.values()],
+    invocations,
+    requested_versus_observed:invocations.map(r=>({
+      role:r.role,
+      provider:r.provider,
+      requested_model:r.requested_model,
+      observed_models:r.observed_models,
+      model_match:r.model_match
+    })),
+    usage:totals
+  };
 }
 
 async function receiptInvocations(packetDir,state,identity){
@@ -128,9 +180,12 @@ async function receiptInvocations(packetDir,state,identity){
     if(workerName.test(entry.name)||entry.name===state?.bridge_run_id)await addRoot(path.join(packetDir,entry.name),'worker');
     else if(/^reviewer-[0-9a-f-]+$/i.test(entry.name)||/^elevated-reviewer-[0-9a-f-]+$/i.test(entry.name))await addRoot(path.join(packetDir,entry.name),'reviewer');
   }
+  // Read the short-lived pre-standardization location as well, so reports for
+  // packets created before the canonical capabilities path remain complete.
+  await addRoot(path.join(packetDir,'fallback_worker_capability'),'capability');
   const capabilities=path.join(packetDir,'capabilities');
   let capabilityRoles=[];try{capabilityRoles=await readdir(capabilities,{withFileTypes:true});}catch(error){if(error.code!=='ENOENT')return {items,observed:false};}
-  for(const entry of capabilityRoles)if(entry.isDirectory()&&['worker','reviewer','senior','elevated_reviewer'].includes(entry.name))await addRoot(path.join(capabilities,entry.name),'capability');
+  for(const entry of capabilityRoles)if(entry.isDirectory()&&['worker','reviewer','senior','elevated_reviewer','fallback_worker'].includes(entry.name))await addRoot(path.join(capabilities,entry.name),'capability');
   if(!roots.length)return {items,observed:false};
   const loaded=[];
   for(const descriptor of roots){
@@ -146,7 +201,7 @@ async function receiptInvocations(packetDir,state,identity){
       loaded.push({receipt,descriptor});
     }
   }
-  const controlled=state?.schema_version==='qq.bridge.controlled-state.v1';
+  const controlled=state?.schema_version==='qq.bridge.controlled-state.v1'||state?.policy==='CONTROLLED_DELEGATION_V1'||state?.policy==='CONTROLLED_DELEGATION_V2';
   if(controlled){
     const workerRuns=new Set(loaded.filter(({receipt,descriptor})=>descriptor.type==='worker'&&['WORK','REPAIR','SENIOR'].includes(receipt.kind)&&receipt.run_id===path.basename(descriptor.root)).map(({receipt})=>receipt.run_id));
     for(const {receipt,descriptor} of loaded){
@@ -201,8 +256,21 @@ export async function buildReport(packetDir,{audience='owner'}={}){
     const receiptData=await receiptInvocations(packetDir,state,identity);
     const lastConfirmed=review?{phase:'reviewer',head:identity.head,status:review.verdict}:
       evidence?{phase:'gates',head:identity.head,status:evidence.status}:null;
-    const budget=state.budget?{origin:state.budget.origin??null,initial_count:state.budget.initial_count??null,repair_count:state.budget.repair_count??null,escalation_count:state.budget.escalation_count??null,escalation_used:state.budget.escalation_used??null,pending_reconcile:state.budget.pending_reconcile??null,
-      remaining:{initial:state.budget.initial_count==null?null:Math.max(0,1-state.budget.initial_count),repair:state.budget.repair_count==null?null:Math.max(0,(state.budget.origin==='ASTRA_INITIAL'?1:2)-state.budget.repair_count),escalation:state.budget.escalation_count==null?null:Math.max(0,(state.budget.origin==='ASTRA_INITIAL'?0:1)-state.budget.escalation_count)}}:{repair_rounds:state.repair_rounds??null,senior_passes:state.senior_passes??null,remaining:'unavailable'};
+    let budget;
+    if(state.budget){
+      const b=state.budget;
+      const isV2=b.schema_version==='qq.workflow.budget.v2'||b.policy==='CONTROLLED_DELEGATION_V2'||state.policy==='CONTROLLED_DELEGATION_V2';
+      if(isV2){
+        const sc=b.senior_count??b.escalation_count??0,su=b.senior_used??b.escalation_used??false;
+        budget={schema_version:b.schema_version??'qq.workflow.budget.v2',policy:b.policy??'CONTROLLED_DELEGATION_V2',origin:b.origin??null,active_worker:b.active_worker??null,fallback_occurred:!!b.fallback_occurred,fallback_reason:b.fallback_reason??null,initial_count:b.initial_count??null,repair_count:b.repair_count??null,senior_count:sc,senior_used:su,escalation_count:sc,escalation_used:su,pending_reconcile:b.pending_reconcile??null,
+          remaining:{initial:b.initial_count==null?null:Math.max(0,1-b.initial_count),repair:b.repair_count==null?null:Math.max(0,4-b.repair_count),senior:Math.max(0,2-sc),escalation:Math.max(0,2-sc)}};
+      }else{
+        budget={origin:b.origin??null,initial_count:b.initial_count??null,repair_count:b.repair_count??null,escalation_count:b.escalation_count??null,escalation_used:b.escalation_used??null,pending_reconcile:b.pending_reconcile??null,
+          remaining:{initial:b.initial_count==null?null:Math.max(0,1-b.initial_count),repair:b.repair_count==null?null:Math.max(0,(b.origin==='ASTRA_INITIAL'?1:2)-b.repair_count),escalation:b.escalation_count==null?null:Math.max(0,(b.origin==='ASTRA_INITIAL'?0:1)-b.escalation_count)}};
+      }
+    }else{
+      budget={repair_rounds:state.repair_rounds??null,senior_passes:state.senior_passes??null,remaining:'unavailable'};
+    }
     Object.assign(base,{task:{id:task?.task_id??state.task_id??null,revision:task?.revision??state.revision??null,head:state.head??task?.candidate_head??null,contract_sha256:state.contract_sha256??task?.contract_sha256??null},
       checkpoint:{phase:state.phase??null,last_confirmed:lastConfirmed,reconciliation_required:!!state.reconciliation_required||identityConflict||!!state.budget?.pending_reconcile,in_flight:!!state.in_flight},
       evidence:{observed:!!evidence,status:evidence?.status??'unavailable'},gates:gateSummary(evidence),review:{observed:!!review,verdict:review?.verdict??'unavailable',findings:(review?.material_findings??[]).map(x=>scalar(x)),independent:review?.independent??null},budget,

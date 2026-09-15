@@ -9,4 +9,6 @@ Execution identity được biểu diễn bằng các trường độc lập: `r
 
 `task.json.lock.json` lưu hash contract và risk floor. `evidence.json` lưu head, hash, lệnh gate, timeout, mã thoát và output đã redaction. `review.json` lưu session reviewer, verdict, finding, summary và kết quả kiểm tra rủi ro.
 
+Ngân sách thực thi dùng schema `qq.workflow.budget.v1` hoặc `qq.workflow.budget.v2`. Schema V2 bổ sung các trường trạng thái `active_worker`, `fallback_occurred`, `fallback_reason`, `failed_invocations` và `handoff_history`; giới hạn và ý nghĩa chuẩn của chúng nằm trong canonical spec.
+
 `node scripts/workflow.mjs` đọc và kiểm tra các packet này. Quy tắc workflow, trạng thái và điều kiện review nằm tại [V10 canonical spec](V10_CANONICAL_SPEC.md).

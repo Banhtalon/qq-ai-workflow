@@ -25,7 +25,7 @@ node scripts/bridge.mjs activate <bridge-config.json> <accepted-pilot-packets> <
 
 `workflow.mjs route` trả đề xuất trong chế độ ASSISTED. Bridge ghi argv, thời gian, session, model báo cáo, head, kết quả đã redaction và checkpoint vào run packets. `quota-drill` không gọi AI: nó kiểm tra cầu nối xử lý `WAITING_QUOTA` (hết hạn mức) và resume (tiếp tục) an toàn trên bản sao trạng thái. Dùng thư mục activation tách khỏi packet pilot đã chấp nhận. `activate` chỉ nhận pilot và biên nhận quota drill cùng khớp với canonical spec.
 
-Mỗi lượt thực thi phân biệt `role`, `provider`, `cli`, `requested_model`, `observed_models` và `session_id`. Antigravity là CLI worker hiện tại cho provider Google; Codex là CLI hiện tại cho các vai trò review/senior. Model thực tế lấy từ probe hoặc metadata do CLI/provider báo cáo, không suy đoán từ tên CLI.
+Mỗi lượt thực thi phân biệt `role`, `provider`, `cli`, `requested_model`, `observed_models` và `session_id`. Antigravity là CLI worker hiện tại cho provider Google; Codex là CLI hiện tại cho các vai trò review/senior. Model thực tế lấy từ probe hoặc metadata do CLI/provider báo cáo, không suy đoán từ tên CLI. Bridge nhận các policy `CONTROLLED_DELEGATION_V1` và `CONTROLLED_DELEGATION_V2`; quy tắc định tuyến của chúng chỉ nằm trong canonical spec.
 
 ## Ngữ cảnh review và dữ liệu test
 

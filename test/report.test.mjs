@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {beginInvocation,finishInvocation} from '../scripts/lib/receipts.mjs';
+import {aggregateInvocations} from '../scripts/lib/report.mjs';
 
 const cli = fileURLToPath(new URL('../scripts/bridge.mjs', import.meta.url));
 const head = 'a'.repeat(40), contract = 'b'.repeat(64);
@@ -386,4 +387,139 @@ test('legacy report aggregates root probe plus direct UUID worker and reviewer c
   assert.deepEqual(result.invocations.by_role_provider.map(x=>[x.role,x.provider,x.count]).sort(),[
     ['probe','google',1],['reviewer','openai',1],['worker','google',1]
   ]);
+});
+
+test('controlled report formats V2 budget with active_worker, fallback details and remaining repairs', async t => {
+  const f = await fixture(t);
+  const state = {
+    ...f.state,
+    schema_version: 'qq.bridge.controlled-state.v1',
+    policy: 'CONTROLLED_DELEGATION_V2',
+    phase: 'REPAIR',
+    budget: {
+      schema_version: 'qq.workflow.budget.v2',
+      policy: 'CONTROLLED_DELEGATION_V2',
+      origin: 'GEMINI_INITIAL',
+      active_worker: 'luna',
+      fallback_occurred: true,
+      fallback_reason: 'WAITING_QUOTA',
+      initial_count: 1,
+      repair_count: 2,
+      senior_count: 1,
+      senior_used: true,
+      pending_reconcile: false
+    }
+  };
+  await f.put('state.json', state);
+  const text = run(f.dir, ['--audience', 'lead', '--format', 'json']);
+  const result = JSON.parse(text);
+
+  assert.equal(result.budget.schema_version, 'qq.workflow.budget.v2');
+  assert.equal(result.budget.policy, 'CONTROLLED_DELEGATION_V2');
+  assert.equal(result.budget.active_worker, 'luna');
+  assert.equal(result.budget.fallback_occurred, true);
+  assert.equal(result.budget.fallback_reason, 'WAITING_QUOTA');
+  assert.equal(result.budget.initial_count, 1);
+  assert.equal(result.budget.repair_count, 2);
+  assert.equal(result.budget.senior_count, 1);
+  assert.equal(result.budget.remaining.repair, 2);
+  assert.equal(result.budget.remaining.senior, 1);
+});
+
+test('controlled report includes fallback_worker capability probe receipts in observed invocations', async t => {
+  const f = await fixture(t), runId = '22223333-1234-4123-8123-123456789abc';
+  await f.put('state.json', { ...f.state, schema_version: 'qq.bridge.controlled-state.v1', policy: 'CONTROLLED_DELEGATION_V2', bridge_run_id: runId, run_id: runId });
+  const cases = [
+    { dir: path.join(f.dir, runId), root: path.join(f.dir, runId), role: 'worker', kind: 'WORK', provider: 'google', tokens: 10 },
+    { dir: path.join(f.dir, 'capabilities', 'fallback_worker', 'probe-attempt'), root: path.join(f.dir, 'capabilities', 'fallback_worker'), role: 'probe', kind: 'PROBE', provider: 'openai', tokens: 15 }
+  ];
+  for (const item of cases) {
+    const binding = { provider: item.provider, cli: item.provider === 'openai' ? 'codex' : 'antigravity', model: 'fixture' };
+    const started_at = '2026-09-13T00:00:00.000Z', finished_at = '2026-09-13T00:00:01.000Z';
+    const context = await beginInvocation({ packetDir: item.dir, role: item.role, receiptKind: item.kind, binding, prompt: 'test', started_at });
+    await finishInvocation({ packetDir: item.dir, receiptRoot: item.root, role: item.role, receiptKind: item.kind, binding, prompt: 'test', context,
+      started_at, finished_at, result: { status: 'OK', usage: { input_tokens: item.tokens, output_tokens: 1 } } });
+  }
+  const result = JSON.parse(run(f.dir));
+  assert.equal(result.invocations.observed, true);
+  assert.equal(result.invocations.count, 2);
+  assert.equal(result.invocations.usage.input_tokens, 25);
+  assert.deepEqual(result.invocations.by_role_provider.map(x => [x.role, x.provider, x.count]).sort(), [
+    ['probe', 'openai', 1], ['worker', 'google', 1]
+  ]);
+});
+
+test('aggregateInvocations accounts requested vs observed models across receipt schemas', () => {
+  // 1. Raw invocation receipt shape (binding + result)
+  const rawReceipts = [
+    {
+      schema_version: 'qq.workflow.invocation-receipt.v1',
+      receipt_id: 'raw-1',
+      binding: { role: 'worker', provider: 'google', model: 'models/gemini-3.8-flash-high:latest', effort: null },
+      result: { observed_models: ['gemini-3.8-flash-high'], status: 'SUCCESS', usage: { input_tokens: 10, output_tokens: 5 } }
+    },
+    {
+      schema_version: 'qq.workflow.invocation-receipt.v1',
+      receipt_id: 'raw-2',
+      binding: { role: 'worker', provider: 'openai', model: 'gpt-5.6-luna', effort: 'max' },
+      result: { observed_models: ['gpt-5.6-luna'], status: 'SUCCESS', usage: { input_tokens: 20, output_tokens: 10 } }
+    }
+  ];
+  const aggRaw = aggregateInvocations(rawReceipts, true);
+  assert.equal(aggRaw.count, 2);
+  assert.equal(aggRaw.requested_versus_observed[0].role, 'worker');
+  assert.equal(aggRaw.requested_versus_observed[0].provider, 'google');
+  assert.equal(aggRaw.requested_versus_observed[0].requested_model, 'models/gemini-3.8-flash-high:latest');
+  assert.deepEqual(aggRaw.requested_versus_observed[0].observed_models, ['gemini-3.8-flash-high']);
+  assert.equal(aggRaw.requested_versus_observed[0].model_match, 'matched');
+  assert.equal(aggRaw.requested_versus_observed[1].model_match, 'matched');
+  assert.equal(aggRaw.usage.input_tokens, 30);
+  assert.equal(aggRaw.usage.output_tokens, 15);
+
+  // 2. Controlled execution receipt shape (observed_by_bridge + reported_by_provider)
+  const bridgeReceipts = [
+    {
+      schema_version: 'qq.workflow.execution-receipt.v1',
+      receipt_id: 'bridge-1',
+      role: 'senior',
+      observed_by_bridge: { provider: 'openai', requested_model: 'gpt-5.6-sol', requested_effort: 'medium' },
+      reported_by_provider: { actual_model: 'gpt-5.6-sol', usage: { input_tokens: 50, output_tokens: 25 } }
+    }
+  ];
+  const aggBridge = aggregateInvocations(bridgeReceipts, true);
+  assert.equal(aggBridge.count, 1);
+  assert.equal(aggBridge.requested_versus_observed[0].role, 'senior');
+  assert.equal(aggBridge.requested_versus_observed[0].provider, 'openai');
+  assert.equal(aggBridge.requested_versus_observed[0].requested_model, 'gpt-5.6-sol');
+  assert.deepEqual(aggBridge.requested_versus_observed[0].observed_models, ['gpt-5.6-sol']);
+  assert.equal(aggBridge.requested_versus_observed[0].model_match, 'matched');
+  assert.equal(aggBridge.usage.input_tokens, 50);
+
+  // 3. Model mismatch (observed differs from requested)
+  const mismatchReceipts = [
+    {
+      role: 'worker',
+      provider: 'google',
+      requested_model: 'gemini-3.8-flash-high',
+      observed_models: ['gemini-1.5-pro']
+    }
+  ];
+  const aggMismatch = aggregateInvocations(mismatchReceipts, true);
+  assert.equal(aggMismatch.requested_versus_observed[0].model_match, 'mismatched');
+
+  // 4. Uncertain match (missing provider observation or missing requested model)
+  const uncertainReceipts = [
+    {
+      role: 'worker',
+      binding: { model: 'gemini-3.8-flash-high' },
+      result: { observed_models: [] }
+    },
+    {
+      role: 'worker',
+      provider: 'openai'
+    }
+  ];
+  const aggUncertain = aggregateInvocations(uncertainReceipts, true);
+  assert.equal(aggUncertain.requested_versus_observed[0].model_match, 'uncertain');
+  assert.equal(aggUncertain.requested_versus_observed[1].model_match, 'uncertain');
 });

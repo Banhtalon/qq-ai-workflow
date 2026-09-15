@@ -115,11 +115,30 @@ reviewer binding digest. Risk elevation needs a fresh elevated review even at th
 same head. Cached readiness is revalidated; material findings go to bounded repair,
 not to another approval attempt without implementation repair.
 Tasks adopting versioned schema `qq.workflow.task.v10.1` may declare
-`execution.policy=CONTROLLED_DELEGATION_V1`. This policy is subscription-only and
-uses a designated Gemini 3.8 Flash High worker, an independent Terra Xhigh ordinary
+`execution.policy=CONTROLLED_DELEGATION_V1` or `execution.policy=CONTROLLED_DELEGATION_V2`.
+This policy family is subscription-only.
+The V1 policy uses a designated Gemini 3.8 Flash High worker, an independent Terra Xhigh ordinary
 reviewer, and exactly `gpt-6-astra` at low effort for senior escalation or elevated
 review. Astra never escalates to Astra; an unavailable elevated reviewer returns
 WAIT/STOP and never falls back to Terra.
+The V2 policy preserves verification quality while conserving Codex tokens: it uses Sol Medium as
+Lead, Gemini 3.8 Flash High as primary survey/implementation/test/repair worker, GPT-5.6 Luna Max
+as standby fallback worker, GPT-5.6 Terra Xhigh as independent ordinary reviewer, GPT-5.6 Sol Medium
+as senior, and a fresh independent GPT-5.6 Sol Medium session as elevated reviewer. Lead and senior
+participants cannot serve as reviewer for that feature. Model IDs and reasoning effort are verified
+via CLI and cannot be substituted silently. V2 allocates one initial worker attempt plus four shared
+repair rounds between Gemini and Luna. Fallback from Gemini to Luna is permitted exclusively on
+invocation or provider execution failures (unavailability, quota, connection, timeout, or invalid protocol
+output); test failures and reviewer repair requests never trigger fallback. Scope violations,
+permission denials, contract mismatches, or tampered evidence cannot trigger fallback and fail closed
+with STOP/BLOCKED. Pre-handoff reconciliation verifies Gemini has terminated, reconciles workspace state,
+and records a durable checkpoint before invoking Luna; Luna runs sequentially without parallel execution
+and remains active worker for subsequent rounds. Failed invocations do not consume completed repair rounds
+and are recorded in failed call history. If Luna is unavailable, WAIT/BLOCKED is recorded without falling
+back to senior or paid APIs. Luna capabilities are probed only when fallback is needed. If material failure
+persists after four repair rounds, Sol senior has at most two passes (one initial pass and one follow-up
+repair pass); tasks starting at senior also have at most two senior passes without worker budget. Budget
+exhaustion with unresolved issues stops with BLOCKED_TECHNICAL.
 The shipped new-task template and `workflow.mjs init` use `CONTROLLED_DELEGATION_V1`.
 `GEMINI_FIRST_V1` remains supported for legacy task compatibility rather than as the
 default for newly initialized tasks.
@@ -128,7 +147,7 @@ ELEVATED. FAST is documentation-only with a frozen allowlist and a bound waiver;
 out-of-scope or behavioral content stops with SCOPE_VIOLATION. User-visible tasks
 need a frozen local Product Check; unavailable Product Check is UNVERIFIED/WAIT and
 does not consume implementation repair budget. Controlled repair budgets are tracked
-by origin and never reset by a new scope revision; supplemental recovery requires
+by origin and policy and never reset by a new scope revision; supplemental recovery requires
 explicit Owner authorization and a dedicated budget ledger.
 For every controlled invocation, the Bridge writes an assignment receipt before
 invocation and an execution receipt on every terminal path. Raw invocation identity

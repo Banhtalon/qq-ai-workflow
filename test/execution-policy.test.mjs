@@ -11,6 +11,8 @@ import {
   projectFrozenPayload,
   verifyClassifierContract,
   POLICY_DISCRIMINATOR,
+  POLICY_V1,
+  POLICY_V2,
   BUDGET_ORIGINS,
   BUDGET_EVENTS,
   BUDGET_ACTIONS,
@@ -21,6 +23,12 @@ import {
   GEMINI_MODEL,
   ASTRA_MODEL,
   ASTRA_EFFORT,
+  LUNA_MODEL,
+  LUNA_EFFORT,
+  SOL_MODEL,
+  SOL_EFFORT,
+  TERRA_MODEL,
+  TERRA_EFFORT,
   FROZEN_CONTRACT_KEYS
 } from '../scripts/lib/execution-policy.mjs';
 
@@ -1126,4 +1134,410 @@ test('P2 regression: valid positive decisions preserved when explicit booleans a
   });
   assert.equal(validElevated.status, LANE_STATUSES.OK);
   assert.equal(validElevated.lane, LANES.ELEVATED_PROCESS);
+});
+
+// ============================================================================
+// CONTROLLED_DELEGATION_V2 Budget State Machine & Validation Tests
+// ============================================================================
+
+test('V2 budget initialization with createBudget(BUDGET_ORIGINS.GEMINI_INITIAL, POLICY_V2)', () => {
+  const b = createBudget(BUDGET_ORIGINS.GEMINI_INITIAL, POLICY_V2);
+  assert.equal(b.schema_version, 'qq.workflow.budget.v2');
+  assert.equal(b.policy, POLICY_V2);
+  assert.equal(b.origin, BUDGET_ORIGINS.GEMINI_INITIAL);
+  assert.equal(b.initial_count, 0);
+  assert.equal(b.repair_count, 0);
+  assert.equal(b.senior_count, 0);
+  assert.equal(b.senior_used, false);
+  assert.equal(b.active_worker, 'gemini');
+  assert.equal(b.fallback_occurred, false);
+  assert.equal(b.fallback_reason, null);
+  assert.deepEqual(b.failed_invocations, []);
+  assert.deepEqual(b.handoff_history, []);
+  assert.deepEqual(b.attempts, []);
+  assert.equal(validateBudgetState(b, POLICY_V2).valid, true);
+});
+
+test('V2 GEMINI_INITIAL permits 1 initial + 4 repairs (shared) + 2 senior passes to Sol Medium; then BLOCKED', () => {
+  const b0 = createBudget(BUDGET_ORIGINS.GEMINI_INITIAL, POLICY_V2);
+
+  // 1. Initial attempt -> Gemini Flash High (effort null)
+  const r1 = advanceBudget(b0, BUDGET_EVENTS.INITIAL);
+  assert.equal(r1.action, BUDGET_ACTIONS.LAUNCH);
+  assert.equal(r1.state.initial_count, 1);
+  assert.equal(r1.state.repair_count, 0);
+  assert.equal(r1.state.senior_count, 0);
+  assert.equal(r1.state.active_worker, 'gemini');
+  const att1 = r1.state.attempts[0];
+  assert.equal(att1.id, 'attempt-1');
+  assert.equal(att1.phase, 'initial');
+  assert.equal(att1.tier, 'worker');
+  assert.equal(att1.model, GEMINI_MODEL);
+  assert.equal(att1.effort, null);
+  assert.equal(validateBudgetState(r1.state, POLICY_V2).ok, true);
+
+  // 2. Repair 1 -> Gemini worker repair 1 of 4
+  const r2 = advanceBudget(r1.state, BUDGET_EVENTS.REPAIR_REQUESTED);
+  assert.equal(r2.action, BUDGET_ACTIONS.LAUNCH);
+  assert.equal(r2.state.repair_count, 1);
+  assert.equal(r2.state.attempts[1].model, GEMINI_MODEL);
+  assert.equal(r2.state.attempts[1].phase, 'repair');
+
+  // 3. Repair 2 -> Gemini worker repair 2 of 4
+  const r3 = advanceBudget(r2.state, BUDGET_EVENTS.REPAIR_REQUESTED);
+  assert.equal(r3.action, BUDGET_ACTIONS.LAUNCH);
+  assert.equal(r3.state.repair_count, 2);
+
+  // 4. Repair 3 -> Gemini worker repair 3 of 4
+  const r4 = advanceBudget(r3.state, BUDGET_EVENTS.REPAIR_REQUESTED);
+  assert.equal(r4.action, BUDGET_ACTIONS.LAUNCH);
+  assert.equal(r4.state.repair_count, 3);
+
+  // 5. Repair 4 -> Gemini worker repair 4 of 4
+  const r5 = advanceBudget(r4.state, BUDGET_EVENTS.REPAIR_REQUESTED);
+  assert.equal(r5.action, BUDGET_ACTIONS.LAUNCH);
+  assert.equal(r5.state.repair_count, 4);
+  assert.equal(r5.state.senior_used, false);
+
+  // 6. Repair 5 -> Senior escalation 1 of 2 to Sol Medium
+  const r6 = advanceBudget(r5.state, BUDGET_EVENTS.REPAIR_REQUESTED);
+  assert.equal(r6.action, BUDGET_ACTIONS.LAUNCH);
+  assert.equal(r6.state.repair_count, 4);
+  assert.equal(r6.state.senior_count, 1);
+  assert.equal(r6.state.senior_used, true);
+  const att6 = r6.state.attempts[5];
+  assert.equal(att6.id, 'attempt-6');
+  assert.equal(att6.phase, 'escalation');
+  assert.equal(att6.tier, 'senior');
+  assert.equal(att6.model, SOL_MODEL);
+  assert.equal(att6.effort, SOL_EFFORT);
+
+  // 7. Repair 6 -> Senior escalation 2 of 2 to Sol Medium
+  const r7 = advanceBudget(r6.state, BUDGET_EVENTS.REPAIR_REQUESTED);
+  assert.equal(r7.action, BUDGET_ACTIONS.LAUNCH);
+  assert.equal(r7.state.repair_count, 4);
+  assert.equal(r7.state.senior_count, 2);
+  const att7 = r7.state.attempts[6];
+  assert.equal(att7.id, 'attempt-7');
+  assert.equal(att7.phase, 'escalation');
+  assert.equal(att7.tier, 'senior');
+  assert.equal(att7.model, SOL_MODEL);
+  assert.equal(att7.effort, SOL_EFFORT);
+
+  // 8. Repair 7 -> BLOCKED (exhausted)
+  const r8 = advanceBudget(r7.state, BUDGET_EVENTS.REPAIR_REQUESTED);
+  assert.equal(r8.action, BUDGET_ACTIONS.BLOCKED);
+  assert.match(r8.reason, /Budget exhausted/i);
+  assert.equal(r8.state.attempts.length, 7);
+});
+
+test('V2 Gemini-to-Luna fallback preserves shared repair count and launches Luna Max', () => {
+  const b0 = createBudget(BUDGET_ORIGINS.GEMINI_INITIAL, POLICY_V2);
+  const r1 = advanceBudget(b0, BUDGET_EVENTS.INITIAL);
+  const r2 = advanceBudget(r1.state, BUDGET_EVENTS.REPAIR_REQUESTED); // repair 1 by Gemini
+  assert.equal(r2.state.repair_count, 1);
+  assert.equal(r2.state.active_worker, 'gemini');
+
+  // Trigger fallback due to quota exhaustion
+  const fallbackEvent = {
+    type: BUDGET_EVENTS.FALLBACK_TRIGGERED,
+    reason: 'WAITING_QUOTA',
+    failed_invocation: {
+      provider: 'google',
+      model: GEMINI_MODEL,
+      status: 'WAITING_QUOTA',
+      bridge_run_id: 'gemini-failure-001',
+      timestamp: '2026-09-14T10:00:00.000Z'
+    }
+  };
+
+  const r_fallback = advanceBudget(r2.state, fallbackEvent);
+  assert.equal(r_fallback.action, BUDGET_ACTIONS.LAUNCH);
+  assert.equal(r_fallback.state.active_worker, 'luna');
+  assert.equal(r_fallback.state.fallback_occurred, true);
+  assert.equal(r_fallback.state.fallback_reason, 'WAITING_QUOTA');
+  assert.equal(r_fallback.state.repair_count, 1); // Repair count is preserved!
+  assert.equal(r_fallback.state.failed_invocations.length, 1);
+  assert.equal(r_fallback.state.handoff_history.length, 1);
+  assert.equal(r_fallback.state.handoff_history[0].from_worker, 'gemini');
+  assert.equal(r_fallback.state.handoff_history[0].to_worker, 'luna');
+  assert.equal(r_fallback.state.handoff_history[0].failed_invocation_id, 'gemini-failure-001');
+
+  const fallbackAtt = r_fallback.state.attempts[2];
+  assert.equal(fallbackAtt.id, 'attempt-3');
+  assert.equal(fallbackAtt.tier, 'worker');
+  assert.equal(fallbackAtt.phase, 'fallback_worker');
+  assert.equal(fallbackAtt.model, LUNA_MODEL);
+  assert.equal(fallbackAtt.effort, LUNA_EFFORT);
+  assert.equal(validateBudgetState(r_fallback.state, POLICY_V2).ok, true);
+
+  // Attempting another fallback when already on Luna fails closed
+  const doubleFallback = advanceBudget(r_fallback.state, fallbackEvent);
+  assert.equal(doubleFallback.action, BUDGET_ACTIONS.BLOCKED);
+  assert.match(doubleFallback.reason, /already occurred|prohibited/i);
+
+  // Luna performs repair 2 of 4
+  const r_luna_rep2 = advanceBudget(r_fallback.state, BUDGET_EVENTS.REPAIR_REQUESTED);
+  assert.equal(r_luna_rep2.action, BUDGET_ACTIONS.LAUNCH);
+  assert.equal(r_luna_rep2.state.repair_count, 2);
+  assert.equal(r_luna_rep2.state.attempts[3].model, LUNA_MODEL);
+  assert.equal(r_luna_rep2.state.attempts[3].effort, LUNA_EFFORT);
+
+  // Luna performs repair 3 of 4
+  const r_luna_rep3 = advanceBudget(r_luna_rep2.state, BUDGET_EVENTS.REPAIR_REQUESTED);
+  assert.equal(r_luna_rep3.action, BUDGET_ACTIONS.LAUNCH);
+  assert.equal(r_luna_rep3.state.repair_count, 3);
+
+  // Luna performs repair 4 of 4
+  const r_luna_rep4 = advanceBudget(r_luna_rep3.state, BUDGET_EVENTS.REPAIR_REQUESTED);
+  assert.equal(r_luna_rep4.action, BUDGET_ACTIONS.LAUNCH);
+  assert.equal(r_luna_rep4.state.repair_count, 4);
+
+  // Repair 5: 4 repairs exhausted -> escalates to Sol Senior (pass 1 of 2)
+  const r_sol1 = advanceBudget(r_luna_rep4.state, BUDGET_EVENTS.REPAIR_REQUESTED);
+  assert.equal(r_sol1.action, BUDGET_ACTIONS.LAUNCH);
+  assert.equal(r_sol1.state.senior_count, 1);
+  assert.equal(r_sol1.state.attempts[6].model, SOL_MODEL);
+  assert.equal(r_sol1.state.attempts[6].effort, SOL_EFFORT);
+
+  // Repair 6: Sol Senior (pass 2 of 2)
+  const r_sol2 = advanceBudget(r_sol1.state, BUDGET_EVENTS.REPAIR_REQUESTED);
+  assert.equal(r_sol2.action, BUDGET_ACTIONS.LAUNCH);
+  assert.equal(r_sol2.state.senior_count, 2);
+  assert.equal(r_sol2.state.attempts[7].model, SOL_MODEL);
+  assert.equal(r_sol2.state.attempts[7].effort, SOL_EFFORT);
+
+  // Repair 7: BLOCKED
+  const r_blocked = advanceBudget(r_sol2.state, BUDGET_EVENTS.REPAIR_REQUESTED);
+  assert.equal(r_blocked.action, BUDGET_ACTIONS.BLOCKED);
+});
+
+test('V2 SOL_INITIAL permits 1 initial + 1 repair only to Sol Medium; never self-escalates', () => {
+  const b0 = createBudget(BUDGET_ORIGINS.SOL_INITIAL, POLICY_V2);
+  assert.equal(b0.origin, BUDGET_ORIGINS.SOL_INITIAL);
+  assert.equal(b0.policy, POLICY_V2);
+
+  // Attempt 1: INITIAL -> Sol Senior 1 of 2
+  const r1 = advanceBudget(b0, BUDGET_EVENTS.INITIAL);
+  assert.equal(r1.action, BUDGET_ACTIONS.LAUNCH);
+  assert.equal(r1.state.initial_count, 1);
+  assert.equal(r1.state.senior_count, 0);
+  assert.equal(r1.state.senior_used, false);
+  assert.equal(r1.state.attempts[0].model, SOL_MODEL);
+  assert.equal(r1.state.attempts[0].effort, SOL_EFFORT);
+  assert.equal(r1.state.attempts[0].tier, 'senior');
+
+  // Attempt 2: REPAIR_REQUESTED -> Sol Senior 2 of 2
+  const r2 = advanceBudget(r1.state, BUDGET_EVENTS.REPAIR_REQUESTED);
+  assert.equal(r2.action, BUDGET_ACTIONS.LAUNCH);
+  assert.equal(r2.state.repair_count, 1);
+  assert.equal(r2.state.senior_count, 0);
+  assert.equal(r2.state.senior_used, false);
+  assert.equal(r2.state.attempts[1].model, SOL_MODEL);
+  assert.equal(r2.state.attempts[1].effort, SOL_EFFORT);
+
+  // Attempt 3: REPAIR_REQUESTED -> BLOCKED
+  const r3 = advanceBudget(r2.state, BUDGET_EVENTS.REPAIR_REQUESTED);
+  assert.equal(r3.action, BUDGET_ACTIONS.BLOCKED);
+  assert.match(r3.reason, /self-escalation prohibited|exhausted/i);
+});
+
+test('V2 validateBudgetState detects tampering with counters, models, efforts and handoff history', () => {
+  const b0 = createBudget(BUDGET_ORIGINS.GEMINI_INITIAL, POLICY_V2);
+  const r1 = advanceBudget(b0, BUDGET_EVENTS.INITIAL);
+
+  // 1. Invalid repair_count (exceeds max 4)
+  assert.equal(validateBudgetState({ ...r1.state, repair_count: 5 }, POLICY_V2).valid, false);
+
+  // 2. Invalid senior_count (exceeds max 2)
+  assert.equal(validateBudgetState({ ...r1.state, senior_count: 3 }, POLICY_V2).valid, false);
+
+  // 3. Negative repair_count
+  assert.equal(validateBudgetState({ ...r1.state, repair_count: -1 }, POLICY_V2).valid, false);
+
+  // 4. Fractional senior_count
+  assert.equal(validateBudgetState({ ...r1.state, senior_count: 1.5 }, POLICY_V2).valid, false);
+
+  // 5. Active worker mismatch
+  assert.equal(validateBudgetState({ ...r1.state, active_worker: 'luna' }, POLICY_V2).valid, false);
+
+  // 5a. Compatibility aliases must stay consistent with their canonical fields.
+  assert.equal(validateBudgetState({ ...r1.state, escalation_count: 1 }, POLICY_V2).valid, false);
+  assert.equal(validateBudgetState({ ...r1.state, escalation_used: true }, POLICY_V2).valid, false);
+
+  // 5b. A Sol-origin budget cannot claim an active worker.
+  const solIdle = createBudget(BUDGET_ORIGINS.SOL_INITIAL, POLICY_V2);
+  assert.equal(validateBudgetState({ ...solIdle, active_worker: 'luna' }, POLICY_V2).valid, false);
+
+  // 6. Attempt model mismatch (Astra under V2)
+  const badAttempts = [{ ...r1.state.attempts[0], model: ASTRA_MODEL, effort: ASTRA_EFFORT }];
+  assert.equal(validateBudgetState({ ...r1.state, attempts: badAttempts }, POLICY_V2).valid, false);
+
+  // 7. Luna attempt with wrong effort (e.g. 'low')
+  const lunaBadEffortAttempts = [{
+    id: 'attempt-1',
+    origin: BUDGET_ORIGINS.GEMINI_INITIAL,
+    phase: 'initial',
+    tier: 'worker',
+    model: LUNA_MODEL,
+    effort: 'low',
+    status: 'LAUNCHED'
+  }];
+  assert.equal(validateBudgetState({
+    ...r1.state,
+    active_worker: 'luna',
+    fallback_occurred: true,
+    fallback_reason: 'TEST',
+    fallback_handoff: { from_worker: 'gemini', to_worker: 'luna', reason: 'TEST' },
+    handoff_history: [{ from_worker: 'gemini', to_worker: 'luna', reason: 'TEST', at_attempt: 'attempt-1' }],
+    attempts: lunaBadEffortAttempts
+  }, POLICY_V2).valid, false);
+
+  // 8. Sol attempt with wrong effort (e.g. 'high')
+  const solBadEffortAttempts = [{
+    id: 'attempt-1',
+    origin: BUDGET_ORIGINS.SOL_INITIAL,
+    phase: 'initial',
+    tier: 'senior',
+    model: SOL_MODEL,
+    effort: 'high',
+    status: 'LAUNCHED'
+  }];
+  assert.equal(validateBudgetState({
+    ...r1.state,
+    origin: BUDGET_ORIGINS.SOL_INITIAL,
+    active_worker: null,
+    senior_count: 0,
+    senior_used: false,
+    attempts: solBadEffortAttempts
+  }, POLICY_V2).valid, false);
+
+  // 9. A Gemini initial attempt cannot be rewritten as Luna.
+  assert.equal(validateBudgetState({
+    ...r1.state,
+    attempts: [{ ...r1.state.attempts[0], model: LUNA_MODEL, effort: LUNA_EFFORT }]
+  }, POLICY_V2).valid, false);
+});
+
+test('V2 budget validation fails closed on all handoff-history and failed_invocations tamper classes', () => {
+  const b0 = createBudget(BUDGET_ORIGINS.GEMINI_INITIAL, POLICY_V2);
+  const r1 = advanceBudget(b0, BUDGET_EVENTS.INITIAL);
+  const r2 = advanceBudget(r1.state, BUDGET_EVENTS.REPAIR_REQUESTED);
+  const fallbackEvent = {
+    type: BUDGET_EVENTS.FALLBACK_TRIGGERED,
+    reason: 'WAITING_QUOTA',
+    failed_invocation: {
+      provider: 'google',
+      model: GEMINI_MODEL,
+      status: 'WAITING_QUOTA',
+      bridge_run_id: 'gemini-failure-002',
+      timestamp: '2026-09-14T10:00:00.000Z'
+    }
+  };
+  const rFallback = advanceBudget(r2.state, fallbackEvent);
+  const validFallbackState = rFallback.state;
+
+  // Base state is valid
+  assert.equal(validateBudgetState(validFallbackState, POLICY_V2).ok, true);
+
+  // Fallback requires a completed Gemini attempt and its recorded failure.
+  const fresh = createBudget(BUDGET_ORIGINS.GEMINI_INITIAL, POLICY_V2);
+  assert.equal(advanceBudget(fresh, { type: BUDGET_EVENTS.FALLBACK_TRIGGERED, reason: 'WAITING_QUOTA' }).action, BUDGET_ACTIONS.BLOCKED);
+  assert.equal(advanceBudget(r1.state, { type: BUDGET_EVENTS.FALLBACK_TRIGGERED, reason: 'WAITING_QUOTA' }).action, BUDGET_ACTIONS.BLOCKED);
+  assert.equal(advanceBudget(r2.state, {
+    type: BUDGET_EVENTS.FALLBACK_TRIGGERED,
+    reason: 'WAITING_QUOTA',
+    failed_invocation: { provider: 'google', model: GEMINI_MODEL, status: 'WAITING_QUOTA' }
+  }).action, BUDGET_ACTIONS.BLOCKED);
+
+  // 1. handoff_history not an array
+  assert.equal(validateBudgetState({ ...validFallbackState, handoff_history: 'invalid' }, POLICY_V2).ok, false);
+
+  // 2. handoff_history empty when fallback_occurred is true
+  assert.equal(validateBudgetState({ ...validFallbackState, handoff_history: [] }, POLICY_V2).ok, false);
+
+  // 3. handoff_history has > 1 entries (cardinality tamper)
+  const extraHandoff = { ...validFallbackState.handoff_history[0] };
+  assert.equal(validateBudgetState({ ...validFallbackState, handoff_history: [extraHandoff, extraHandoff] }, POLICY_V2).ok, false);
+
+  // 4. fallback_handoff reason edited (differs from handoff_history[0].reason)
+  const tamperedReasonHandoff = { ...validFallbackState.fallback_handoff, reason: 'TAMPERED_REASON' };
+  assert.equal(validateBudgetState({ ...validFallbackState, fallback_handoff: tamperedReasonHandoff }, POLICY_V2).ok, false);
+
+  // 5. fallback_reason on state edited (differs from fallback_handoff.reason)
+  assert.equal(validateBudgetState({ ...validFallbackState, fallback_reason: 'TAMPERED_STATE_REASON' }, POLICY_V2).ok, false);
+
+  // 6. timestamp mismatch between fallback_handoff and handoff_history[0]
+  const tamperedTimeHandoff = { ...validFallbackState.fallback_handoff, timestamp: '2026-01-01T00:00:00.000Z' };
+  assert.equal(validateBudgetState({ ...validFallbackState, fallback_handoff: tamperedTimeHandoff }, POLICY_V2).ok, false);
+
+  // 7. Worker identity tampered in handoff (e.g. from_worker not Gemini)
+  const tamperedWorkerHandoff = { ...validFallbackState.fallback_handoff, from_worker: 'openai' };
+  assert.equal(validateBudgetState({
+    ...validFallbackState,
+    fallback_handoff: tamperedWorkerHandoff,
+    handoff_history: [tamperedWorkerHandoff]
+  }, POLICY_V2).ok, false);
+
+  // 8. Worker identity tampered in handoff (e.g. to_worker not Luna)
+  const tamperedToWorkerHandoff = { ...validFallbackState.fallback_handoff, to_worker: 'gpt-5.6-sol' };
+  assert.equal(validateBudgetState({
+    ...validFallbackState,
+    fallback_handoff: tamperedToWorkerHandoff,
+    handoff_history: [tamperedToWorkerHandoff]
+  }, POLICY_V2).ok, false);
+
+  // 9. Digest tamper (digest edited)
+  const tamperedDigestHandoff = { ...validFallbackState.fallback_handoff, digest: '0'.repeat(64) };
+  assert.equal(validateBudgetState({
+    ...validFallbackState,
+    fallback_handoff: tamperedDigestHandoff,
+    handoff_history: [tamperedDigestHandoff]
+  }, POLICY_V2).ok, false);
+
+  // 10. fallback_occurred false with lingering handoff or reason
+  assert.equal(validateBudgetState({
+    ...validFallbackState,
+    fallback_occurred: false,
+    active_worker: 'gemini'
+  }, POLICY_V2).ok, false);
+
+  // 11. failed_invocations contains unauthorized field
+  const badFieldFi = { ...validFallbackState.failed_invocations[0], unauthorized_field: 'malicious' };
+  assert.equal(validateBudgetState({ ...validFallbackState, failed_invocations: [badFieldFi] }, POLICY_V2).ok, false);
+
+  // 12. failed_invocations missing required fields (e.g. provider)
+  const missingFieldFi = { model: GEMINI_MODEL, status: 'WAITING_QUOTA' };
+  assert.equal(validateBudgetState({ ...validFallbackState, failed_invocations: [missingFieldFi] }, POLICY_V2).ok, false);
+
+  // 12b. The handoff must reference the exact durable Gemini invocation.
+  const unlinkedFailure = { ...validFallbackState.failed_invocations[0], bridge_run_id: 'different-gemini-run' };
+  assert.equal(validateBudgetState({ ...validFallbackState, failed_invocations: [unlinkedFailure] }, POLICY_V2).ok, false);
+
+  // 13. fallback attempt missing from attempts when fallback_occurred is true
+  const noFallbackAttempts = validFallbackState.attempts.filter(a => a.phase !== 'fallback_worker');
+  assert.equal(validateBudgetState({ ...validFallbackState, attempts: noFallbackAttempts }, POLICY_V2).ok, false);
+});
+
+test('V2 budget validation accepts a durable Luna provider failure after the Gemini-to-Luna handoff', () => {
+  const b0 = createBudget(BUDGET_ORIGINS.GEMINI_INITIAL, POLICY_V2);
+  const started = advanceBudget(b0, BUDGET_EVENTS.INITIAL);
+  const geminiFailure = {
+    provider: 'google', requested_model: GEMINI_MODEL, bridge_run_id: 'gemini-failure-001',
+    termination_status: 'WAITING_QUOTA', reason: 'RESOURCE_EXHAUSTED'
+  };
+  const fallback = advanceBudget(started.state, {
+    type: BUDGET_EVENTS.FALLBACK_TRIGGERED,
+    reason: 'RESOURCE_EXHAUSTED',
+    failed_invocation: geminiFailure,
+    handoff: { from_worker: GEMINI_MODEL, to_worker: LUNA_MODEL, reason: 'RESOURCE_EXHAUSTED', timestamp: '2026-01-01T00:00:00.000Z', failed_invocation_id: 'gemini-failure-001' }
+  });
+  const withLunaFailure = {
+    ...fallback.state,
+    failed_invocations: [...fallback.state.failed_invocations, {
+      provider: 'openai', requested_model: LUNA_MODEL, bridge_run_id: 'luna-failure-001',
+      termination_status: 'WAITING_QUOTA', reason: 'RESOURCE_EXHAUSTED'
+    }]
+  };
+  assert.equal(validateBudgetState(withLunaFailure, POLICY_V2).valid, true);
 });
